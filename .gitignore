@@ -1,0 +1,13 @@
+# build output
+/perch
+/watcher
+*.exe
+
+# local runtime state
+*.session.json
+aamp-watcher-sessions.json
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/
