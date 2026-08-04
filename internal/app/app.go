@@ -92,7 +92,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			continue // leave unseen so a later poll retries the reply
 		}
 		_ = a.mb.MarkSeen(ctx, m.UID)
-		a.log.Info("task done", "from", m.From, "message_id", m.MessageID)
+		a.log.Info("task done", "from", m.From, "session", sid, "resumed", !isNew, "message_id", m.MessageID)
 	}
 	return nil
 }
