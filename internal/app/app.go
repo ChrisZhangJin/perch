@@ -105,23 +105,34 @@ func (a *App) Run(ctx context.Context) error {
 		if err := a.ProcessUnseen(ctx); err != nil {
 			a.log.Error("process failed", "err", err)
 			if !sleep(ctx, 5*time.Second) {
-				return a.mb.Close()
+				return a.shutdown()
 			}
 			continue
 		}
 		if ctx.Err() != nil {
-			return a.mb.Close()
+			return a.shutdown()
 		}
 		if err := a.mb.WaitForActivity(ctx, a.cfg.PollInterval); err != nil {
 			if ctx.Err() != nil {
-				return a.mb.Close()
+				return a.shutdown()
 			}
 			a.log.Warn("idle wait failed; falling back to poll", "err", err)
 			if !sleep(ctx, a.cfg.PollInterval) {
-				return a.mb.Close()
+				return a.shutdown()
 			}
 		}
 	}
+}
+
+// shutdown closes the mailbox on expected (ctx-cancelled) exit. A close error
+// during teardown is cosmetic (e.g. IMAP connection desync on LOGOUT), so it is
+// logged at debug and not propagated as a fatal run error.
+func (a *App) shutdown() error {
+	a.log.Info("shutting down")
+	if err := a.mb.Close(); err != nil {
+		a.log.Debug("mailbox close", "err", err)
+	}
+	return nil
 }
 
 // sleep waits d or until ctx is done. Returns false if ctx was cancelled.

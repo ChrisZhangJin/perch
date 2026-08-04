@@ -25,9 +25,15 @@ type IMAPMailbox struct {
 	c   *imapclient.Client
 	cfg *config.Config
 
+	idleSupported bool
+
 	mu         sync.Mutex
 	onActivity func()
 }
+
+// IdleSupported reports whether the server advertised the IMAP IDLE capability.
+// Some providers (e.g. 163) do not, in which case perch runs in poll-only mode.
+func (m *IMAPMailbox) IdleSupported() bool { return m.idleSupported }
 
 // Dial connects with implicit TLS, sends the IMAP ID command (163 requires it),
 // logs in with the authorization code, and selects INBOX.
@@ -62,6 +68,17 @@ func Dial(cfg *config.Config) (*IMAPMailbox, error) {
 		c.Close()
 		return nil, err
 	}
+
+	// Detect IDLE support. 163 does not support IDLE and desyncs the connection
+	// if we send it, so we must know up front and stay in poll-only mode there.
+	caps := c.Caps()
+	if len(caps) == 0 {
+		if fetched, err := c.Capability().Wait(); err == nil {
+			caps = fetched
+		}
+	}
+	m.idleSupported = caps.Has(imap.CapIdle)
+
 	return m, nil
 }
 
@@ -119,6 +136,18 @@ func (m *IMAPMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 // WaitForActivity runs IDLE and returns when the server reports new mail, when
 // timeout elapses (safety poll), or when ctx is cancelled — whichever first.
 func (m *IMAPMailbox) WaitForActivity(ctx context.Context, timeout time.Duration) error {
+	// Poll-only mode (server has no IDLE, e.g. 163): just wait out the interval.
+	// Never send IDLE here — on 163 it errors and corrupts the connection.
+	if !m.idleSupported {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+		}
+		return nil
+	}
+
 	got := make(chan struct{}, 1)
 	m.mu.Lock()
 	m.onActivity = func() {
@@ -150,4 +179,15 @@ func (m *IMAPMailbox) WaitForActivity(ctx context.Context, timeout time.Duration
 	return nil
 }
 
-func (m *IMAPMailbox) Close() error { return m.c.Close() }
+func (m *IMAPMailbox) Close() error {
+	// Best-effort graceful LOGOUT (bounded), then close the connection. Errors
+	// here are teardown noise (the server may already be gone) — the caller
+	// treats an expected-shutdown close as non-fatal.
+	done := make(chan struct{})
+	go func() { _ = m.c.Logout().Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+	return m.c.Close()
+}
