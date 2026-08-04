@@ -52,7 +52,10 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 	if err != nil {
 		return err
 	}
-	conn, err := tls.Dial("tcp", r.cfg.SMTPAddr, &tls.Config{ServerName: host})
+	conn, err := tls.Dial("tcp", r.cfg.SMTPAddr, &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: r.cfg.TLSInsecure, //nolint:gosec // dev/test-only, gated by TLS_INSECURE_SKIP_VERIFY
+	})
 	if err != nil {
 		return err
 	}

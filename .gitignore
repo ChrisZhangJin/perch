@@ -1,4 +1,5 @@
 # build output
+/bin/
 /perch
 /watcher
 *.exe

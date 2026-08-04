@@ -23,6 +23,9 @@ type Config struct {
 	TaskTimeout    time.Duration
 	MaxPromptBytes int
 	SessionStore   string
+	// TLSInsecure skips TLS certificate verification for IMAP and SMTP.
+	// DEV/TEST ONLY (e.g. a local mail server with a self-signed cert).
+	TLSInsecure bool
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -39,7 +42,8 @@ func Load() (*Config, error) {
 		PollInterval:   durOr("POLL_INTERVAL", 60*time.Second),
 		TaskTimeout:    durOr("TASK_TIMEOUT", 30*time.Minute),
 		MaxPromptBytes: intOr("MAX_PROMPT_BYTES", 65536),
-		SessionStore:   envOr("SESSION_STORE", filepath.Join(os.TempDir(), "aamp-watcher-sessions.json")),
+		SessionStore:   envOr("SESSION_STORE", filepath.Join(os.TempDir(), "perch-sessions.json")),
+		TLSInsecure:    boolOr("TLS_INSECURE_SKIP_VERIFY", false),
 	}
 	if c.Email == "" || c.AuthCode == "" {
 		return nil, errors.New("AGENT_EMAIL and AGENT_AUTH_CODE are required")
@@ -67,6 +71,15 @@ func intOr(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func boolOr(k string, def bool) bool {
+	if v := os.Getenv(k); v != "" {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
 		}
 	}
 	return def

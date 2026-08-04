@@ -16,8 +16,12 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/session"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log.Info("perch starting", "version", version)
 
 	cfg, err := config.Load()
 	if err != nil {

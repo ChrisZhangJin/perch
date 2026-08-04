@@ -75,12 +75,15 @@ CLAUDE_WORKDIR=/home/agent/workspace \
 ## Test
 
 ```bash
-go test ./...   # unit tests + offline end-to-end (mock mailbox, stub agent, fake sender)
-go vet ./...
+make test                          # unit tests + offline end-to-end
+./scripts/localtest/demo.sh reject # real IMAP/SMTP against a local Docker mail server
 ```
 
-`internal/mailbox` (real IMAP) has no unit tests — it is validated by `go build` and the
-manual end-to-end below.
+The one-command demo spins up a throwaway [GreenMail](https://greenmail-mail-test.github.io/greenmail/)
+server, sends a whitelisted task email, runs perch with a stub agent, and shows the
+threaded reply — then proves a non-whitelisted sender is ignored. See
+[`docs/TESTING.md`](docs/TESTING.md) for all three levels (automated → local Docker →
+real 163 mailboxes).
 
 ## Manual end-to-end
 

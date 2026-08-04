@@ -2,6 +2,7 @@ package mailbox
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ type IMAPMailbox struct {
 func Dial(cfg *config.Config) (*IMAPMailbox, error) {
 	m := &IMAPMailbox{cfg: cfg}
 	opts := &imapclient.Options{
+		TLSConfig: &tls.Config{InsecureSkipVerify: cfg.TLSInsecure}, //nolint:gosec // dev/test-only, gated by TLS_INSECURE_SKIP_VERIFY
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
 				if data.NumMessages != nil {
