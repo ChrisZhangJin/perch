@@ -4,6 +4,9 @@ import (
 	"io"
 	"strings"
 
+	// Register decoders for common charsets (GBK/GB2312/GB18030/Big5/Shift_JIS/…)
+	// so Chinese/CJK emails parse. Without this, go-message errors on non-UTF-8.
+	_ "github.com/emersion/go-message/charset"
 	gomail "github.com/emersion/go-message/mail"
 )
 

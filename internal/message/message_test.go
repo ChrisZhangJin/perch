@@ -2,6 +2,7 @@ package message
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +48,27 @@ func TestThreadRoot(t *testing.T) {
 	noRefs := &Message{MessageID: "<self@x>"}
 	if noRefs.ThreadRoot() != "<self@x>" {
 		t.Errorf("ThreadRoot no refs = %q", noRefs.ThreadRoot())
+	}
+}
+
+func TestParseGBKBody(t *testing.T) {
+	// Regression: real 163/126 mail is often GBK-encoded. The charset side-effect
+	// import must decode it to UTF-8 rather than erroring on "unhandled charset".
+	f, err := os.Open("testdata/gbk.eml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	m, err := Parse(f, 7, 4096)
+	if err != nil {
+		t.Fatalf("Parse GBK: %v", err)
+	}
+	if m.From != "zhangjin0602@126.com" {
+		t.Errorf("From = %q", m.From)
+	}
+	if !strings.Contains(m.Body, "你好") || !strings.Contains(m.Body, "GBK 编码") {
+		t.Errorf("GBK body not decoded to UTF-8: %q", m.Body)
 	}
 }
 
