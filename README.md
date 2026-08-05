@@ -93,11 +93,27 @@ real 163 mailboxes).
 4. Reply again in the same thread → same agent session (memory preserved).
 5. Email B from a non-whitelisted address → silently ignored (logged, no reply).
 
+## Receiving: push vs polling
+
+perch auto-detects the IMAP `IDLE` capability and logs the mode at startup:
+
+- **`mode=idle+poll`** — server pushes on new mail; perch reacts near-instantly (passive).
+  Works on Gmail, Outlook, Fastmail, self-hosted Dovecot, etc.
+- **`mode=poll-only`** — no IDLE, so perch polls every `POLL_INTERVAL` (active). This is the
+  case for **163/126** (NetEase has no IMAP IDLE). Lower `POLL_INTERVAL` to cut latency.
+
+perch is IMAP-only — no JMAP/JMAP-Push or provider webhooks. **Chinese mainstream mailboxes
+don't support JMAP**, and 163/126 lack IMAP IDLE too, so on them polling is the only option.
+For true passive push, use an IDLE-capable mailbox (perch switches automatically). See
+[`docs/DESIGN.md`](docs/DESIGN.md#receiving-passive-push-vs-active-polling) for the full
+provider table.
+
 ## Provider notes (163)
 
 163/126 require an IMAP `ID` command before login (perch sends it) and login with an
 **authorization code**, not the account password. Hosts default to `imap.163.com:993` and
-`smtp.163.com:465` (both implicit TLS); for 126 override `IMAP_ADDR`/`SMTP_ADDR`.
+`smtp.163.com:465` (both implicit TLS); for 126 override `IMAP_ADDR`/`SMTP_ADDR`. NetEase
+IMAP has no `IDLE`, so perch runs `poll-only` there (see above).
 
 ## Status
 

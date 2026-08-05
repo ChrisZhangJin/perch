@@ -40,6 +40,41 @@ Single connection, alternating `ProcessUnseen` → IDLE-up-to-`POLL_INTERVAL` �
 IDLE gives near-real-time delivery; the timeout doubles as a safety poll; there is no
 concurrent use of the IMAP connection.
 
+## Receiving: passive push vs active polling
+
+How perch learns a new mail arrived depends on what the server supports. It probes the
+IMAP `IDLE` capability (RFC 2177) after `SELECT` and picks a mode, logged at startup:
+
+- **`mode=idle+poll` (passive push):** perch holds an IMAP `IDLE` connection open; the
+  server *pushes* an untagged `EXISTS` when mail arrives and perch wakes immediately
+  (near-real-time). `POLL_INTERVAL` only re-issues IDLE periodically as a keepalive/safety
+  net. This is event-driven, not a busy loop.
+- **`mode=poll-only` (active polling):** if the server has no IDLE, perch never sends it
+  (on some servers a rejected IDLE desyncs the connection). It just runs a `UID SEARCH
+  UNSEEN` every `POLL_INTERVAL`. Latency ≈ the interval; cost is one cheap SEARCH per tick.
+
+perch chooses automatically — no config. It is IMAP-only; it does **not** implement JMAP,
+JMAP Push (RFC 8887), or provider-native webhooks.
+
+### Provider capability (as of 2026)
+
+| Provider | IMAP IDLE (perch push) | JMAP / JMAP Push | perch mode |
+|---|---|---|---|
+| 网易 163 / 126 (NetEase, Coremail) | ❌ no (verified) | ❌ | `poll-only` |
+| QQ 邮箱 / 其他国内 (Sina, 139, 189, Aliyun) | ⚠️ varies — check the `mode=` log | ❌ | usually `poll-only` |
+| Gmail, Outlook/O365, Fastmail, self-hosted Dovecot/Cyrus | ✅ yes | Fastmail: ✅ JMAP | `idle+poll` |
+
+**Chinese mainstream mailboxes do not support JMAP** — they are all IMAP/POP/SMTP, so
+JMAP Push is not an option domestically, and 163/126 lack even IMAP IDLE. On those, active
+polling is the only mechanism; lower `POLL_INTERVAL` (e.g. `10s`) to reduce latency (the
+per-tick cost is negligible).
+
+**Want true passive push?** Use an IDLE-capable mailbox (Gmail / Fastmail / self-hosted
+Dovecot) and perch switches to `idle+poll` automatically, zero code change. Provider-native
+webhooks (Gmail API `watch` + Pub/Sub, MS Graph subscriptions) or JMAP Push are possible
+but are per-provider integrations outside perch's minimal scope — at that point the full
+[AAMP](https://github.com/larksuite/aamp) stack (JMAP push) is the better fit.
+
 ## Components (`internal/`)
 
 | Package | Responsibility |
