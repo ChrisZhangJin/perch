@@ -78,7 +78,8 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		}
 		a.log.Info("processing", "from", m.From, "subject", m.Subject, "date", ts.Format(time.RFC3339))
 		if !a.gate.FirstSight(m.MessageID) {
-			a.log.Debug("dedup skipped", "from", m.From, "message_id", m.MessageID)
+			a.log.Info("dedup skipped (same thread, later reply will handle)",
+				"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 			continue // duplicate delivery within this run
 		}
 		if !a.gate.Allowed(m.From) {
