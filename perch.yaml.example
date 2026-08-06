@@ -1,0 +1,63 @@
+# perch.yaml.example — example configuration for perch.
+#
+# Copy this file to `perch.yaml` (or `~/.config/perch/perch.yaml`) and
+# edit. At startup perch loads the YAML file at this path, then layers
+# env vars on top, then falls back to built-in defaults. Precedence:
+#
+#     env vars  >  this YAML file  >  built-in defaults
+#
+# Secrets (AGENT_AUTH_CODE) MUST be set via env, never committed here.
+# See README.md / docs/DESIGN.md for the full design.
+
+# --- Mailbox (IMAP) --------------------------------------------------------
+# Implicit-TLS IMAP endpoint. 163 default; override for other providers.
+imap_addr: imap.163.com:993
+# imap_addr: imap.gmail.com:993         # Gmail / Workspace
+# imap_addr: imap-mail.outlook.com:993  # Outlook / Microsoft 365
+# imap_addr: imap.fastmail.com:993      # Fastmail
+# imap_addr: 127.0.0.1:3993             # local GreenMail (dev)
+
+# --- Outbound (SMTP) -------------------------------------------------------
+# Implicit-TLS SMTP endpoint (port 465 = implicit TLS; 587 = STARTTLS, also OK).
+smtp_addr: smtp.163.com:465
+# smtp_addr: smtp.gmail.com:465
+# smtp_addr: smtp-mail.outlook.com:587
+
+# --- Whitelist -------------------------------------------------------------
+# ONLY these senders can wake the agent. Empty list = deny everyone.
+# Comma-separated when set via the ALLOW_FROM env var; YAML uses a real list.
+allow_from:
+  - alice@163.com
+  # - bob@example.com
+
+# --- Agent runner ----------------------------------------------------------
+# Any `-p "<prompt>"` CLI works. Default = Claude Code.
+agent_bin: claude                       # CLAUDE_BIN
+agent_workdir: /home/agent/workspace    # CLAUDE_WORKDIR (cwd for the spawned agent)
+agent_permission_mode: acceptEdits      # CLAUDE_PERMISSION_MODE
+                                        #   acceptEdits        — auto-allow file edits
+                                        #   bypassPermissions  — auto-allow ALL tools
+                                        #   plan               — read-only planning mode
+
+# --- Loop timing -----------------------------------------------------------
+poll_interval: 60s                       # POLL_INTERVAL (poll tick / IDLE keepalive)
+                                         #   lower this if your server is poll-only
+                                         #   (163/126: 10s feels snappier than 60s)
+task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)
+
+# --- Email handling --------------------------------------------------------
+max_prompt_bytes: 65536                 # MAX_PROMPT_BYTES (truncate huge bodies before
+                                         #   the agent sees them — protects against
+                                         #   absurdly large attachments / signatures)
+
+# --- Persistence -----------------------------------------------------------
+# Thread-root → Claude session UUID map (JSON). Survives restarts so a
+# reply in the same thread resumes the same agent session.
+# session_store: /var/lib/perch/sessions.json
+# session_store: ./perch-sessions.json
+# (default: $TMPDIR/perch-sessions.json)
+
+# --- TLS -------------------------------------------------------------------
+# DEV/TEST ONLY — accepts self-signed certs (e.g. a local GreenMail).
+# NEVER enable against a real mailbox.
+# tls_insecure_skip_verify: false
