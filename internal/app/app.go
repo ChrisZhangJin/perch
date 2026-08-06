@@ -58,6 +58,9 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(raws) > 0 {
+		a.log.Info("received", "count", len(raws))
+	}
 	for _, raw := range raws {
 		m, err := message.Parse(bytes.NewReader(raw.Data), raw.UID, a.cfg.MaxPromptBytes)
 		if err != nil {
@@ -65,7 +68,17 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			_ = a.mb.MarkSeen(ctx, raw.UID)
 			continue
 		}
+		// Log every parsed message with the sender-visible timestamp (Date
+		// header) so the operator can correlate a perch event with when the
+		// human actually sent it. If Date is missing/unparseable we fall back
+		// to the fetch time.
+		ts := m.Date
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		a.log.Info("processing", "from", m.From, "subject", m.Subject, "date", ts.Format(time.RFC3339))
 		if !a.gate.FirstSight(m.MessageID) {
+			a.log.Debug("dedup skipped", "from", m.From, "message_id", m.MessageID)
 			continue // duplicate delivery within this run
 		}
 		if !a.gate.Allowed(m.From) {

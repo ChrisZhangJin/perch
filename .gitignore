@@ -12,6 +12,8 @@ aamp-watcher-sessions.json
 .DS_Store
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # local secret (163 auth code)
 grant.code
