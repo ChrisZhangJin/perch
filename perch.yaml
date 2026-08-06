@@ -24,6 +24,7 @@ smtp_addr: smtp.163.com:465          # SMTP_ADDR (implicit TLS)
 # Empty list = deny everyone (safer default).
 # Comma-separated when set via the ALLOW_FROM env var; YAML uses a real list.
 allow_from:
+  - zhangjin0602@126.com
   # - alice@163.com
   # - bob@example.com
 

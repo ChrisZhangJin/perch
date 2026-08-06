@@ -13,7 +13,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,7 +85,13 @@ func Load(cfgPath string) (*Config, error) {
 
 	// 4. Required-field gate. Secrets come from env only.
 	if c.Email == "" || c.AuthCode == "" {
-		return nil, errors.New("AGENT_EMAIL and AGENT_AUTH_CODE are required (set via env; secrets are never read from the YAML file)")
+		return nil, fmt.Errorf(
+			"AGENT_EMAIL and AGENT_AUTH_CODE are required. "+
+				"perch reads credentials from env vars only — never from the YAML file. "+
+				"Run it like:\n"+
+				"  AGENT_EMAIL=you@163.com AGENT_AUTH_CODE='<your 163 authcode>' ./bin/perch\n"+
+				"(tip: keep the auth code in an untracked file like ./grant.code, then "+
+				"AGENT_AUTH_CODE=\"$(cat ./grant.code)\" ./bin/perch)")
 	}
 	return c, nil
 }
