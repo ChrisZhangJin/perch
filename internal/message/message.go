@@ -3,6 +3,7 @@ package message
 import (
 	"io"
 	"strings"
+	"time"
 
 	// Register decoders for common charsets (GBK/GB2312/GB18030/Big5/Shift_JIS/…)
 	// so Chinese/CJK emails parse. Without this, go-message errors on non-UTF-8.
@@ -18,7 +19,8 @@ type Message struct {
 	InReplyTo  string
 	References []string
 	Subject    string
-	Body       string // text/plain, truncated to maxBody
+	Date       time.Time // RFC5322 Date: header; zero if absent/unparseable
+	Body       string    // text/plain, truncated to maxBody
 }
 
 // ThreadRoot returns the first References id if present, else the message's own id.
@@ -45,6 +47,9 @@ func Parse(r io.Reader, uid uint32, maxBody int) (*Message, error) {
 	m.MessageID = firstMsgID(h.Get("Message-Id"))
 	m.InReplyTo = firstMsgID(h.Get("In-Reply-To"))
 	m.References = allMsgIDs(h.Get("References"))
+	if d, err := h.Date(); err == nil {
+		m.Date = d
+	}
 
 	var fallback string
 	haveText := false

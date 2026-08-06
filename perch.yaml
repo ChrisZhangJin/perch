@@ -1,0 +1,51 @@
+# perch — default configuration.
+#
+# Loaded by `perch` at startup. The path can be overridden with:
+#   --config <path>     (CLI flag)
+#   PERCH_CONFIG <path> (env var)
+# If neither is set, perch searches ./perch.yaml, then
+# ~/.config/perch/perch.yaml, then falls back to these built-in defaults.
+#
+# Every field here can ALSO be overridden by an environment variable of the
+# same name (see the env->field map below). Precedence: env > this file > built-in.
+#
+# Secrets (AGENT_AUTH_CODE) MUST be set via env, never committed here.
+
+# --- Mailbox (IMAP) --------------------------------------------------------
+imap_addr: imap.163.com:993          # IMAP_ADDR (implicit TLS)
+# imap_addr: imap.gmail.com:993      # Gmail/Outlook/Fastmail/Dovecot
+# smtp_addr: smtp.gmail.com:465
+
+# --- Outbound (SMTP) -------------------------------------------------------
+smtp_addr: smtp.163.com:465          # SMTP_ADDR (implicit TLS)
+# smtp_addr: smtp.gmail.com:465
+
+# --- Whitelist -------------------------------------------------------------
+# Empty list = deny everyone (safer default).
+# Comma-separated when set via the ALLOW_FROM env var; YAML uses a real list.
+allow_from:
+  - zhangjin0602@126.com
+  # - alice@163.com
+  # - bob@example.com
+
+# --- Agent runner ----------------------------------------------------------
+# Any `-p "<prompt>"` CLI works. Default `claude` = Claude Code.
+agent_bin: claude                    # CLAUDE_BIN
+agent_workdir: .                     # CLAUDE_WORKDIR (cwd for the spawned agent)
+agent_permission_mode: acceptEdits   # CLAUDE_PERMISSION_MODE
+                                     # (acceptEdits | bypassPermissions | plan | …)
+
+# --- Loop timing -----------------------------------------------------------
+poll_interval: 60s                    # POLL_INTERVAL (poll tick / IDLE keepalive)
+task_timeout: 30m                    # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)
+
+# --- Email handling --------------------------------------------------------
+max_prompt_bytes: 65536              # MAX_PROMPT_BYTES (truncate huge bodies)
+
+# --- Persistence -----------------------------------------------------------
+# Path is expanded at load: $TMPDIR/perch-sessions.json by default.
+# session_store: /var/lib/perch/sessions.json
+
+# --- TLS -------------------------------------------------------------------
+# DEV/TEST ONLY — accepts self-signed certs (e.g. local GreenMail).
+# tls_insecure_skip_verify: false

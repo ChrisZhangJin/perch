@@ -65,7 +65,10 @@ const badEML = "From: mallory@evil.com\r\nSubject: pwn\r\nMessage-ID: <m2@evil.c
 
 func newTestApp(t *testing.T, mb Mailbox, run TaskRunner, rep ReplySender) *App {
 	cfg := &config.Config{MaxPromptBytes: 4096}
-	g := gate.New([]string{"alice@163.com"})
+	g, err := gate.New([]string{"alice@163.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sess, err := session.Load(filepath.Join(t.TempDir(), "s.json"))
 	if err != nil {
 		t.Fatal(err)
