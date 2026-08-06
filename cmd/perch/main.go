@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -20,13 +21,21 @@ import (
 var version = "dev"
 
 func main() {
+	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.config/perch/perch.yaml). Env: PERCH_CONFIG.")
+	flag.Parse()
+
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	log.Info("perch starting", "version", version)
 
-	cfg, err := config.Load()
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Error("config", "err", err)
 		os.Exit(1)
+	}
+	if used := config.ResolveConfigPath(*configPath); used != "" {
+		log.Info("config loaded", "path", used)
+	} else {
+		log.Info("config loaded", "path", "(built-in defaults only — no YAML file found)")
 	}
 	mb, err := mailbox.Dial(cfg)
 	if err != nil {

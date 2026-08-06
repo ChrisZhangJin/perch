@@ -62,23 +62,32 @@ ProcessUnseen(拉取并处理所有未读邮件)
 go build -o perch ./cmd/perch      # 或:make build (在 ./bin 生成静态二进制)
 ```
 
-## ⚙️ 配置(环境变量)
+## ⚙️ 配置
 
-| 变量 | 必填 | 默认 | 说明 |
+perch 从三层加载配置,优先级由高到低:
+
+1. **环境变量** — 名字与之前一致(`AGENT_EMAIL`、`POLL_INTERVAL` 等)。
+2. **YAML 文件** — 先找当前目录的 `perch.yaml`,再找 `~/.config/perch/perch.yaml`。
+   也可以用 `--config <path>` 或 `PERCH_CONFIG=<path>` 指定路径。仓库根目录里有一份样板。
+3. **内置默认值** — 163 的合理默认;可以用 YAML 或环境变量覆盖。
+
+**密钥**(`AGENT_AUTH_CODE`)只能从环境变量注入,绝不会从 YAML 里读。
+
+| 变量 / YAML key | 必填 | 默认 | 说明 |
 |---|:---:|---|---|
-| `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱 |
-| `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码 |
-| `ALLOW_FROM` | ⚠️ | — | 逗号分隔的允许发件人;为空 = **拒绝所有人** |
-| `CLAUDE_BIN` | | `claude` | 要拉起的 agent CLI |
-| `CLAUDE_WORKDIR` | | `.` | agent 的工作目录 |
-| `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | 让 agent 的工具非交互式运行 |
-| `IMAP_ADDR` | | `imap.163.com:993` | 隐式 TLS |
-| `SMTP_ADDR` | | `smtp.163.com:465` | 隐式 TLS |
-| `POLL_INTERVAL` | | `60s` | 轮询间隔 / IDLE 保活 |
-| `TASK_TIMEOUT` | | `30m` | 超时后 SIGTERM→5s→SIGKILL |
-| `MAX_PROMPT_BYTES` | | `65536` | 截断超大邮件正文 |
-| `SESSION_STORE` | | 临时文件 | 线程→会话 UUID 映射(JSON) |
-| `TLS_INSECURE_SKIP_VERIFY` | | `false` | **仅开发/测试** — 接受自签名证书 |
+| `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱(只能从环境变量,有一定机密性) |
+| `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码(只能从环境变量) |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人** |
+| `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | 隐式 TLS |
+| `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | 隐式 TLS |
+| `agent_bin` / `CLAUDE_BIN` | | `claude` | 要拉起的 agent CLI |
+| `agent_workdir` / `CLAUDE_WORKDIR` | | `.` | agent 的工作目录 |
+| `agent_permission_mode` / `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | 让 agent 的工具非交互式运行 |
+| `poll_interval` / `POLL_INTERVAL` | | `60s` | 轮询间隔 / IDLE 保活 |
+| `task_timeout` / `TASK_TIMEOUT` | | `30m` | 超时后 SIGTERM→5s→SIGKILL |
+| `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | 截断超大邮件正文 |
+| `session_store` / `SESSION_STORE` | | 临时文件 | 线程→会话 UUID 映射(JSON) |
+| `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **仅开发/测试** — 接受自签名证书 |
 
 ## 🚀 运行
 
@@ -88,6 +97,19 @@ AGENT_AUTH_CODE=你的授权码 \
 ALLOW_FROM=alice@163.com \
 CLAUDE_WORKDIR=/home/agent/workspace \
 ./perch
+```
+
+或者把非机密的默认值放在 `perch.yaml` 里,只通过环境变量注入凭证:
+
+```yaml
+# perch.yaml
+poll_interval: 5s
+allow_from: [alice@163.com]
+agent_workdir: /home/agent/workspace
+```
+
+```bash
+AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=你的授权码 ./perch
 ```
 
 ## 🧪 测试

@@ -65,23 +65,35 @@ deterministic code, never a prompt — an email body cannot talk perch out of it
 go build -o perch ./cmd/perch      # or: make build  (static binary in ./bin)
 ```
 
-## ⚙️ Configuration (environment)
+## ⚙️ Configuration
 
-| Var | Required | Default | Notes |
+perch loads its settings from three layers, in this order of precedence
+(higher overrides lower):
+
+1. **Environment variables** — same names as before (`AGENT_EMAIL`, `POLL_INTERVAL`, …).
+2. **YAML file** — `perch.yaml` in the working directory, or
+   `~/.config/perch/perch.yaml`. Override with `--config <path>` /
+   `PERCH_CONFIG=<path>`. A starter file lives at the repo root.
+3. **Built-in defaults** — sensible values for 163; override via YAML or env.
+
+Secrets (`AGENT_AUTH_CODE`) **must** come from the env and are never read
+from the YAML file.
+
+| Var / YAML key | Required | Default | Notes |
 |---|:---:|---|---|
-| `AGENT_EMAIL` | ✅ | — | the mailbox perch watches |
-| `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password |
-| `ALLOW_FROM` | ⚠️ | — | comma-separated allowed senders; empty = **deny all** |
-| `CLAUDE_BIN` | | `claude` | the agent CLI to spawn |
-| `CLAUDE_WORKDIR` | | `.` | working dir for the agent |
-| `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | so agent tools run non-interactively |
-| `IMAP_ADDR` | | `imap.163.com:993` | implicit TLS |
-| `SMTP_ADDR` | | `smtp.163.com:465` | implicit TLS |
-| `POLL_INTERVAL` | | `60s` | poll interval / IDLE keepalive |
-| `TASK_TIMEOUT` | | `30m` | SIGTERM→5s→SIGKILL after this |
-| `MAX_PROMPT_BYTES` | | `65536` | truncate huge email bodies |
-| `SESSION_STORE` | | tmp file | thread→session UUID map (JSON) |
-| `TLS_INSECURE_SKIP_VERIFY` | | `false` | **dev/test only** — accept self-signed certs |
+| `AGENT_EMAIL` | ✅ | — | the mailbox perch watches (env only — secret-ish) |
+| `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password (env only) |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all** |
+| `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | implicit TLS |
+| `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | implicit TLS |
+| `agent_bin` / `CLAUDE_BIN` | | `claude` | the agent CLI to spawn |
+| `agent_workdir` / `CLAUDE_WORKDIR` | | `.` | working dir for the agent |
+| `agent_permission_mode` / `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | so agent tools run non-interactively |
+| `poll_interval` / `POLL_INTERVAL` | | `60s` | poll interval / IDLE keepalive |
+| `task_timeout` / `TASK_TIMEOUT` | | `30m` | SIGTERM→5s→SIGKILL after this |
+| `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | truncate huge email bodies |
+| `session_store` / `SESSION_STORE` | | tmp file | thread→session UUID map (JSON) |
+| `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **dev/test only** — accept self-signed certs |
 
 ## 🚀 Run
 
@@ -91,6 +103,19 @@ AGENT_AUTH_CODE=xxxxxxxx \
 ALLOW_FROM=alice@163.com \
 CLAUDE_WORKDIR=/home/agent/workspace \
 ./perch
+```
+
+Or keep non-secret defaults in `perch.yaml` and inject only credentials via env:
+
+```yaml
+# perch.yaml
+poll_interval: 5s
+allow_from: [alice@163.com]
+agent_workdir: /home/agent/workspace
+```
+
+```bash
+AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch
 ```
 
 ## 🧪 Test
