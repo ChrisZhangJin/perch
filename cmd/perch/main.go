@@ -42,6 +42,11 @@ func main() {
 		log.Error("mailbox dial", "err", err)
 		os.Exit(1)
 	}
+	g, err := gate.New(cfg.AllowFrom)
+	if err != nil {
+		log.Error("gate build", "err", err)
+		os.Exit(1)
+	}
 	if mb.IdleSupported() {
 		log.Info("mailbox ready", "mode", "idle+poll")
 	} else {
@@ -52,7 +57,7 @@ func main() {
 		log.Error("session load", "err", err)
 		os.Exit(1)
 	}
-	a := app.New(cfg, mb, gate.New(cfg.AllowFrom), sess, runner.New(cfg), replier.New(cfg), log)
+	a := app.New(cfg, mb, g, sess, runner.New(cfg), replier.New(cfg), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

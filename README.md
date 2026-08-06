@@ -83,7 +83,7 @@ from the YAML file.
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | the mailbox perch watches (env only — secret-ish) |
 | `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password (env only) |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all** |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`). `ALLOW_FROM` env var only carries literals. |
 | `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | implicit TLS |
 | `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | implicit TLS |
 | `agent_bin` / `CLAUDE_BIN` | | `claude` | the agent CLI to spawn |

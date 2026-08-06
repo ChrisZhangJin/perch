@@ -82,7 +82,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			continue // duplicate delivery within this run
 		}
 		if !a.gate.Allowed(m.From) {
-			a.log.Warn("rejected sender", "from", m.From, "message_id", m.MessageID)
+			a.log.Warn("rejected sender", "from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
@@ -105,7 +105,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			continue // leave unseen so a later poll retries the reply
 		}
 		_ = a.mb.MarkSeen(ctx, m.UID)
-		a.log.Info("task done", "from", m.From, "session", sid, "resumed", !isNew, "message_id", m.MessageID)
+		a.log.Info("task done", "from", m.From, "subject", m.Subject, "session", sid, "resumed", !isNew, "message_id", m.MessageID)
 	}
 	return nil
 }

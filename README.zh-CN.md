@@ -77,7 +77,7 @@ perch 从三层加载配置,优先级由高到低:
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱(只能从环境变量,有一定机密性) |
 | `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码(只能从环境变量) |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人** |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`)。`ALLOW_FROM` 环境变量只承载字面量。 |
 | `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | 隐式 TLS |
 | `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | 隐式 TLS |
 | `agent_bin` / `CLAUDE_BIN` | | `claude` | 要拉起的 agent CLI |

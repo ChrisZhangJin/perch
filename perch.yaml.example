@@ -26,9 +26,24 @@ smtp_addr: smtp.163.com:465
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone.
 # Comma-separated when set via the ALLOW_FROM env var; YAML uses a real list.
+# Each entry is either a literal address or a regex wrapped in `s"..."`:
+#
+#   - alice@163.com                   # literal (case-insensitive exact match)
+#   - s".+@(foo|bar)\.example\.com"  # regex: any user on foo/bar .example.com
+#   - s".*agent.*@qq\.com"           # regex: contains "agent" substring pattern
+#   - s"(?i).+@trusted\.org"         # regex with case-insensitive flag
+#
+# Regexes are compiled at startup; a bad pattern fails the gate immediately
+# (perch never starts in a fail-open state). The `s` prefix and matching
+# trailing `"` are required — without them, the entry is treated as a
+# literal address, NOT a regex.
+#
+# Use ALLOW_FROM env var for literals only (regexes belong in the YAML file).
 allow_from:
   - alice@163.com
+  - s".*agent.*@qq\.com"
   # - bob@example.com
+  # - s".+@(foo|bar)\.example\.com"
 
 # --- Agent runner ----------------------------------------------------------
 # Any `-p "<prompt>"` CLI works. Default = Claude Code.
