@@ -31,11 +31,12 @@ agent(默认 Claude Code,任何 CLI 都行)处理,并在同一邮件线程内回
 ## ✨ 特性
 
 - 📬 **邮件 → agent** — 每封白名单邮件都变成一个 agent 任务,答案原线程回信。
-- 🔒 **安全闸门在代码里** — 发件人白名单 + 去重在 agent 运行**之前**由 Go 强制执行,绝不塞进 prompt。
+- 🔒 **安全闸门在代码里** — 发件人白名单 + 去重在 agent 运行**之前**由 Go 强制执行,绝不塞进 prompt。白名单接受字面量 **和** 正则(`s"..."`)。
 - 🧵 **对话记忆** — 同一线程内的回复会续用同一个 agent 会话(`--resume`)。
 - 📡 **自动推送或轮询** — 服务器支持时用 IMAP `IDLE` 近实时;不支持时(如 163)自动降级为轮询。
 - 🤖 **与 agent 无关** — 默认 `claude`,但任何 `-p "<prompt>"` 的 CLI 都能用。
-- 🪶 **小而静态** — 一个小 Go 二进制,`CGO_ENABLED=0`,无运行时依赖。
+- ⚙️ **分层配置** — YAML 文件、环境变量、内置默认。优先级:env > yaml > default。密钥只能从 env 来。
+- 🪶 **小而静态** — 一个小 Go 二进制,`CGO_ENABLED=0`,无运行时依赖。如果系统里有 [UPX](https://upx.github.io/),`make build` 会自动压缩到 ~2.8 MB(linux/amd64)。
 
 ## 🗺️ 工作原理
 
@@ -51,6 +52,12 @@ ProcessUnseen(拉取并处理所有未读邮件)
 每封邮件:`解析 → 去重(\Seen + 内存集合) → 白名单 → 把邮件线程映射到稳定的 agent 会话
 → 运行 agent -p … → 原线程 SMTP 回信 → 标记 \Seen`。
 
+**重要:** 同一邮件线程里的回复共享同一个 agent 会话,perch 按 `Message-ID` 去重。如果
+你发了一封邮件,然后几秒后又在原邮件上 reply,这两封会在同一次 IMAP fetch 里到达——
+perch 会处理**最新那一封**(包含你最新的意图),并静默去重掉较早那一封。这一步以 INFO
+级别打日志,带上 `subject`,你就能区分"perch 没看到我的邮件"和"perch 处理了 thread
+里更新的那一封"。
+
 ## 🔒 安全模型
 
 发件人白名单和消息去重都在 Go 里、在 agent 被拉起**之前**强制执行。agent 永远看不到非白名单
@@ -59,8 +66,12 @@ ProcessUnseen(拉取并处理所有未读邮件)
 ## 📦 安装
 
 ```bash
-go build -o perch ./cmd/perch      # 或:make build (在 ./bin 生成静态二进制)
+go build -o perch ./cmd/perch      # 或:make build (在 ./bin 生成静态二进制;如有 UPX 会自动压缩)
 ```
+
+如果 `PATH` 里有 [UPX](https://upx.github.io/),`make build` 会跑 `upx --best` 把刚链接
+出来的二进制压到 ~2.8 MB(linux/amd64)。不想压缩就 `PERCH_NO_UPX=1 make build`。
+UPX 安装:`apt-get install upx-ucl`。
 
 ## ⚙️ 配置
 
@@ -77,7 +88,7 @@ perch 从三层加载配置,优先级由高到低:
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱(只能从环境变量,有一定机密性) |
 | `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码(只能从环境变量) |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`)。`ALLOW_FROM` 环境变量只承载字面量。 |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`、`s".*agent.*@qq\.com"`、`s"(?i).+@trusted\.org"`)。正则启动时编译,坏正则立刻让 gate 构建失败(perch 绝不在 fail-open 状态下启动)。`ALLOW_FROM` 环境变量只承载字面量。 |
 | `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | 隐式 TLS |
 | `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | 隐式 TLS |
 | `agent_bin` / `CLAUDE_BIN` | | `claude` | 要拉起的 agent CLI |
@@ -104,13 +115,25 @@ CLAUDE_WORKDIR=/home/agent/workspace \
 ```yaml
 # perch.yaml
 poll_interval: 5s
-allow_from: [alice@163.com]
+allow_from:
+  - alice@163.com
+  - s".+@(foo|bar)\.example\.com"      # 正则:foo/bar.example.com 下任何用户
 agent_workdir: /home/agent/workspace
 ```
 
 ```bash
 AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=你的授权码 ./perch
 ```
+
+**小贴士:** 把授权码放在一个 gitignore 的文件里(仓库自带 `grant.code`),别每次输:
+
+```bash
+AGENT_EMAIL=agent@163.com \
+AGENT_AUTH_CODE="$(tr -d '\n' < ./grant.code)" \
+./perch
+```
+
+每个字段都有注释的样板配置:[`perch.yaml.example`](perch.yaml.example)。
 
 ## 🧪 测试
 
@@ -155,6 +178,11 @@ perch 只用 IMAP——不做 JMAP / JMAP Push,也没有各家 webhook。**国�
 
 原型阶段。与 agent 无关的环境变量目前仍带 `CLAUDE_` 前缀;真实 IMAP/SMTP 路径通过手动测试与本地
 Docker demo 验证,尚未进 CI。
+
+**已知边界:** 如果 `replier.Reply(...)` 失败(SMTP 短暂错误),邮件会保持 `UNSEEN`,
+等下一次 poll 重试——但去重是按 `Message-ID` 来的,所以同一条 RFC822 重 fetch 时
+`FirstSight()=false` 直接被静默丢掉。实际 SMTP 路径稳定性够,这个没复现过,但写在这里
+作为已记录的 correctness gap。
 
 ## 📄 许可
 

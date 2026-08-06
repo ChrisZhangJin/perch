@@ -33,11 +33,12 @@ gate** that listens, authorizes, spawns the agent as a worker, and mails the res
 ## ✨ Features
 
 - 📬 **Email → agent** — every whitelisted email becomes an agent task; the answer is mailed back, threaded.
-- 🔒 **Security gate in code** — sender whitelist + dedup enforced in Go *before* the agent runs; never in a prompt.
+- 🔒 **Security gate in code** — sender whitelist + dedup enforced in Go *before* the agent runs; never in a prompt. Whitelist accepts literals **and** regexes (`s"..."`).
 - 🧵 **Conversation memory** — replies in a thread resume the same agent session (`--resume`).
 - 📡 **Push or poll, automatic** — uses IMAP `IDLE` for near-real-time when available, falls back to polling (e.g. on 163).
 - 🤖 **Agent-agnostic** — defaults to `claude`, but any `-p "<prompt>"` CLI works.
-- 🪶 **Tiny & static** — one small Go binary, `CGO_ENABLED=0`, no runtime deps.
+- ⚙️ **Layered config** — YAML file, env vars, built-in defaults. Precedence: env > yaml > default. Secrets only from env.
+- 🪶 **Tiny & static** — one small Go binary, `CGO_ENABLED=0`, no runtime deps. Auto-compressed with [UPX](https://upx.github.io/) when available (~2.8 MB on linux/amd64).
 
 ## 🗺️ How it works
 
@@ -53,6 +54,12 @@ ProcessUnseen (fetch + handle every unseen message)
 Per message: `parse → dedup (\Seen + in-memory set) → whitelist → map thread to a stable
 agent session → run agent -p … → threaded SMTP reply → mark \Seen`.
 
+**Important:** replies in the same email thread share one agent session, and perch
+dedups by `Message-ID`. If you send an email and then reply to it a few seconds later,
+both messages arrive in one IMAP fetch — perch processes the **latest** one (which has
+your most recent intent) and silently dedups the earlier one. Logged at INFO with the
+subject so you can tell this from "perch ignored my email."
+
 ## 🔒 Security
 
 The sender whitelist and message dedup are enforced in Go, **before** the agent is ever
@@ -62,8 +69,12 @@ deterministic code, never a prompt — an email body cannot talk perch out of it
 ## 📦 Install
 
 ```bash
-go build -o perch ./cmd/perch      # or: make build  (static binary in ./bin)
+go build -o perch ./cmd/perch      # or: make build  (static binary in ./bin, UPX-compressed if available)
 ```
+
+`make build` runs [`upx --best`](https://upx.github.io/) on the freshly-linked binary if UPX
+is on `PATH` (~7 MB → ~2.8 MB on linux/amd64). Set `PERCH_NO_UPX=1` to skip. Install UPX
+via `apt-get install upx-ucl` or equivalent.
 
 ## ⚙️ Configuration
 
@@ -83,7 +94,7 @@ from the YAML file.
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | the mailbox perch watches (env only — secret-ish) |
 | `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password (env only) |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`). `ALLOW_FROM` env var only carries literals. |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`, `s".*agent.*@qq\.com"`, `s"(?i).+@trusted\.org"`). Regexes are compiled at startup; a bad pattern fails the gate immediately (perch never starts in a fail-open state). `ALLOW_FROM` env var carries only literals. |
 | `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | implicit TLS |
 | `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | implicit TLS |
 | `agent_bin` / `CLAUDE_BIN` | | `claude` | the agent CLI to spawn |
@@ -110,13 +121,26 @@ Or keep non-secret defaults in `perch.yaml` and inject only credentials via env:
 ```yaml
 # perch.yaml
 poll_interval: 5s
-allow_from: [alice@163.com]
+allow_from:
+  - alice@163.com
+  - s".+@(foo|bar)\.example\.com"      # regex: any user on foo/bar .example.com
 agent_workdir: /home/agent/workspace
 ```
 
 ```bash
 AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch
 ```
+
+**Tip:** keep the auth code in a gitignored file (the repo ships one called `grant.code`)
+rather than typing it on the command line:
+
+```bash
+AGENT_EMAIL=agent@163.com \
+AGENT_AUTH_CODE="$(tr -d '\n' < ./grant.code)" \
+./perch
+```
+
+A starter config with every field explained lives at [`perch.yaml.example`](perch.yaml.example).
 
 ## 🧪 Test
 
@@ -165,6 +189,12 @@ IMAP has no `IDLE`, so perch runs `poll-only` there.
 
 Prototype. The agent-agnostic env var names still carry a `CLAUDE_` prefix for now; the
 real IMAP/SMTP paths are validated manually and via the local Docker demo, not in CI.
+
+**Known sharp edge:** if `replier.Reply(...)` fails (e.g. SMTP transient error), the
+message is left `UNSEEN` so a later poll retries — but dedup is by `Message-ID`, so a
+re-fetch of the same RFC822 bytes hits `FirstSight()=false` and is silently dropped. In
+practice the SMTP path is reliable enough that this hasn't reproduced, but it's the
+documented correctness gap.
 
 ## 📄 License
 
