@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChrisZhangJin/perch/internal/config"
+	"github.com/ChrisZhangJin/perch/internal/agent"
 )
 
 // writeStub writes an executable shell script that records its args and runs body.
@@ -40,10 +40,21 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 	}
 }
 
+// runnerFromStub wires a Runner that points at a stub binary instead of the
+// real claude binary, so the tests stay hermetic.
+func runnerFromStub(t *testing.T, bin string) *Runner {
+	t.Helper()
+	ag, err := agent.Lookup("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag.Binary = bin // override the registry default for testing
+	return New(&ag, t.TempDir(), "acceptEdits", 5*time.Second)
+}
+
 func TestRunNewSessionPassesSessionID(t *testing.T) {
 	bin, argfile := writeStub(t, `echo "REPLY-OK"`)
-	cfg := &config.Config{ClaudeBin: bin, ClaudeWorkdir: t.TempDir(), ClaudePermMode: "acceptEdits", TaskTimeout: 5 * time.Second}
-	out, err := New(cfg).Run(context.Background(), "hi", "11111111-1111-4111-8111-111111111111", true)
+	out, err := runnerFromStub(t, bin).Run(context.Background(), "hi", "11111111-1111-4111-8111-111111111111", true)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -61,8 +72,7 @@ func TestRunNewSessionPassesSessionID(t *testing.T) {
 
 func TestRunResumePassesResume(t *testing.T) {
 	bin, argfile := writeStub(t, `echo "R"`)
-	cfg := &config.Config{ClaudeBin: bin, ClaudeWorkdir: t.TempDir(), ClaudePermMode: "acceptEdits", TaskTimeout: 5 * time.Second}
-	_, err := New(cfg).Run(context.Background(), "hi", "22222222-2222-4222-8222-222222222222", false)
+	_, err := runnerFromStub(t, bin).Run(context.Background(), "hi", "22222222-2222-4222-8222-222222222222", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +84,7 @@ func TestRunResumePassesResume(t *testing.T) {
 
 func TestRunNonZeroExitReturnsError(t *testing.T) {
 	bin, _ := writeStub(t, `echo "boom" >&2; exit 3`)
-	cfg := &config.Config{ClaudeBin: bin, ClaudeWorkdir: t.TempDir(), ClaudePermMode: "acceptEdits", TaskTimeout: 5 * time.Second}
-	_, err := New(cfg).Run(context.Background(), "hi", "id", false)
+	_, err := runnerFromStub(t, bin).Run(context.Background(), "hi", "id", false)
 	if err == nil {
 		t.Fatal("expected error on non-zero exit")
 	}

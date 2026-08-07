@@ -103,13 +103,13 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 
 		// Inbound attachments: persist so the agent can read them with its
 		// file tools. Failure is non-fatal — the task still runs on the body.
-		saved, err := saveAttachments(a.cfg.ClaudeWorkdir, m)
+		saved, err := saveAttachments(a.cfg.AgentWorkdir, m)
 		if err != nil {
 			a.log.Warn("attachment save failed", "from", m.From, "err", err)
 		}
 
 		// Outbound staging dir: the agent writes files here to send back.
-		rpDir := replyDir(a.cfg.ClaudeWorkdir)
+		rpDir := replyDir(a.cfg.AgentWorkdir)
 		if err := os.MkdirAll(rpDir, 0o755); err != nil {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
