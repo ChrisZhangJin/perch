@@ -3,6 +3,7 @@ package setup
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,15 @@ import (
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 )
+
+// interactiveStdin overrides isTTYFn so the wizard runs as if stdin is a TTY.
+// Tests that exercise the interactive path restore the default on cleanup.
+func interactiveStdin(t *testing.T) {
+	t.Helper()
+	prev := isTTYFn
+	isTTYFn = func(io.Reader) bool { return true }
+	t.Cleanup(func() { isTTYFn = prev })
+}
 
 func TestEnsureSilentWhenComplete(t *testing.T) {
 	cfg := &config.Config{
@@ -67,6 +77,7 @@ func TestEnsureNonInteractiveFailsLoud(t *testing.T) {
 }
 
 func TestEnsureInteractiveHappyPath(t *testing.T) {
+	interactiveStdin(t)
 	cfg := &config.Config{
 		ProviderName:  "163",
 		AgentName:     "claude",
@@ -75,9 +86,9 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 		// Email, AuthCode, AllowFrom — wizard fills these.
 	}
 	// Answers in order: email, authcode (via pw fn), allow_from literal.
-	// wizard will call readLine for: provider (default 163, hit enter), agent (claude, enter),
-	// workdir (., enter), allow_from ("bob@qq.com"), email ("agent@qq.com")
-	script := "\n\n\nbob@qq.com\nagent@qq.com\n"
+	// wizard prompts (in order): provider, agent, workdir, allow_from, email.
+	// Defaults for provider/agent/workdir are set, so empty lines accept them.
+	script := "\n\n\n\nbob@qq.com\nagent@qq.com\n"
 	in := strings.NewReader(script)
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
@@ -123,8 +134,9 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 }
 
 func TestEnsureInteractiveAuthcodeNotEchoed(t *testing.T) {
+	interactiveStdin(t)
 	cfg := &config.Config{} // everything missing => wizard runs
-	in := strings.NewReader("163\nclaude\n.\nalice@x\nagent@x\n")
+	in := strings.NewReader("163\nclaude\n.\nacceptEdits\nalice@x\nagent@x\n")
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	var usedReadPassword bool

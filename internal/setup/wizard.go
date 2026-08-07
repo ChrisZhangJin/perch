@@ -36,7 +36,7 @@ func Ensure(cfg *config.Config, stdin io.Reader, stdout io.Writer, stderr io.Wri
 		return nil
 	}
 	// Non-interactive path: cannot prompt; emit hint and error.
-	if !isInteractive(stdin) {
+	if !isTTYFn(stdin) {
 		fmt.Fprintf(stderr, "missing required fields: %s\n", strings.Join(missing, ", "))
 		fmt.Fprintln(stderr, "hint: run interactively (./perch) or pre-fill via env vars:")
 		fmt.Fprintln(stderr, "  AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch")
@@ -72,6 +72,10 @@ func missingFields(cfg *config.Config) []string {
 	}
 	return m
 }
+
+// isTTYFn is the TTY check used by Ensure. Defaults to isInteractive (the
+// production check); tests override it to drive the wizard without a PTY.
+var isTTYFn = isInteractive
 
 // isInteractive reports whether stdin looks like a TTY. We can't call
 // golang.org/x/term.IsTerminal here without leaking that dep through tests
