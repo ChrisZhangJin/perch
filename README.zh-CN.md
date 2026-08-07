@@ -97,6 +97,7 @@ perch 从三层加载配置,优先级由高到低:
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | 轮询间隔 / IDLE 保活 |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | 超时后 SIGTERM→5s→SIGKILL |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | 截断超大邮件正文 |
+| `max_attachment_bytes` / `MAX_ATTACHMENT_BYTES` | | `52428800` (50 MB) | 单个附件大小上限;超限附件被丢弃(解析仍继续) |
 | `session_store` / `SESSION_STORE` | | 临时文件 | 线程→会话 UUID 映射(JSON) |
 | `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **仅开发/测试** — 接受自签名证书 |
 

@@ -103,6 +103,7 @@ from the YAML file.
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | poll interval / IDLE keepalive |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | SIGTERM→5s→SIGKILL after this |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | truncate huge email bodies |
+| `max_attachment_bytes` / `MAX_ATTACHMENT_BYTES` | | `52428800` (50 MB) | per-attachment size cap; oversized attachments are dropped (parse survives) |
 | `session_store` / `SESSION_STORE` | | tmp file | thread→session UUID map (JSON) |
 | `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **dev/test only** — accept self-signed certs |
 

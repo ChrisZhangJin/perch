@@ -41,6 +41,7 @@ task_timeout: 30m                    # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)
 
 # --- Email handling --------------------------------------------------------
 max_prompt_bytes: 65536              # MAX_PROMPT_BYTES (truncate huge bodies)
+max_attachment_bytes: 52428800       # MAX_ATTACHMENT_BYTES (per-attachment cap, 50 MB)
 
 # --- Persistence -----------------------------------------------------------
 # Path is expanded at load: $TMPDIR/perch-sessions.json by default.

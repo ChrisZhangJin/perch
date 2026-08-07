@@ -1,6 +1,8 @@
 package replier
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,5 +44,32 @@ func TestSanitizeHeaderStripsCRLF(t *testing.T) {
 	got := sanitizeHeader("evil\r\nBcc: victim@x")
 	if strings.ContainsAny(got, "\r\n") {
 		t.Errorf("CRLF not stripped: %q", got)
+	}
+}
+
+func TestComposeWithAttachments(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "report.txt")
+	if err := os.WriteFile(f, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := ComposeWithAttachments(
+		"agent@163.com", "alice@163.com", "Do X", "<root-1@163.com>",
+		[]string{"<thread-root@163.com>"}, "here is the result", []string{f},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(msg)
+	for _, c := range []string{
+		"Subject: Re: Do X",
+		"Content-Type: multipart/mixed",
+		"Content-Disposition: attachment; filename=report.txt",
+		"ZGF0YQ==", // base64("data")
+	} {
+		if !strings.Contains(s, c) {
+			t.Errorf("multipart message missing %q\n---\n%s", c, s)
+		}
 	}
 }

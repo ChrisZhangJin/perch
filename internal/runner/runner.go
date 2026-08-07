@@ -18,12 +18,19 @@ type Runner struct {
 
 func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
 
-// BuildPrompt frames an email as a task prompt for Claude.
-func BuildPrompt(from, subject, body string) string {
-	return fmt.Sprintf(
-		"You received a task via email and must act on it, then produce a reply that will be emailed back to the sender.\n\nFrom: %s\nSubject: %s\n\n%s",
-		from, subject, body,
-	)
+// BuildPrompt frames an email as a task prompt for Claude, listing any
+// inbound attachments already saved to disk and the outbound reply/
+// staging directory the agent should write files into.
+func BuildPrompt(from, subject, body string, attachments []string, replyDir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You received a task via email and must act on it, then produce a reply that will be emailed back to the sender.\n\nFrom: %s\nSubject: %s\n\n%s", from, subject, body)
+	if len(attachments) > 0 {
+		fmt.Fprintf(&b, "\n\nThis email has %d attachment(s). They were saved under:\n%s\nRead them with your file tools if the task requires it.", len(attachments), strings.Join(attachments, "\n"))
+	}
+	if replyDir != "" {
+		fmt.Fprintf(&b, "\n\nTo send files back to the sender, write them into %s — they will be attached to your reply email automatically.", replyDir)
+	}
+	return b.String()
 }
 
 // Run spawns `claude -p` for one task. A brand-new thread creates a session via

@@ -1,0 +1,24 @@
+From: Alice Example <Alice@163.com>
+To: agent@163.com
+Subject: Here is the file
+Message-ID: <att-1@163.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b0unD4ry"
+
+--b0unD4ry
+Content-Type: text/plain; charset=utf-8
+
+Please read the attached log and summarize it.
+--b0unD4ry
+Content-Type: application/octet-stream; name="app.log"
+Content-Disposition: attachment; filename="app.log"
+Content-Transfer-Encoding: base64
+
+bG9nIGxpbmUgMQpsb2cgbGluZSAyCg==
+--b0unD4ry
+Content-Type: application/octet-stream; name="../../evil.txt"
+Content-Disposition: attachment; filename="../../evil.txt"
+Content-Transfer-Encoding: base64
+
+ZXZpbA==
+--b0unD4ry--

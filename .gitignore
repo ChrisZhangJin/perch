@@ -2,7 +2,7 @@
 /bin/
 /perch
 /watcher
-/dist/            # goreleaser snapshot output
+/dist/
 *.exe
 
 # local runtime state

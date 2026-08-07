@@ -25,9 +25,18 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Do X", "please do X")
+	p := BuildPrompt("alice@163.com", "Do X", "please do X", nil, "")
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
+	}
+}
+
+func TestBuildPromptAttachmentHints(t *testing.T) {
+	p := BuildPrompt("alice@163.com", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply")
+	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
 	}
 }
 
