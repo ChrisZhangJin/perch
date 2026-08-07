@@ -21,11 +21,10 @@ builds:
       - CGO_ENABLED=0
     flags:
       - -trimpath
-      - -s
-      - -w
     ldflags:
-      # inject the resolved git tag as main.version
-      - -X main.version={{.Version}}
+      # strip + inject the resolved git tag as main.version
+      # (the Makefile does the same: -s -w -X main.version=...)
+      - -s -w -X main.version={{.Version}}
     goos:
       - linux
       - darwin
@@ -59,12 +58,20 @@ archives:
       - perch.yaml.example
       - docs/**
 
-# UPX pass after GoReleaser archives each binary. Same flag set as the
+# UPX pass after GoReleaser builds each binary. Same flag set as the
 # Makefile so a release binary matches what `make build` produces locally.
+#
+# UPX can't pack Mach-O binaries reliably (CantPackException on darwin),
+# so we apply UPX only to linux + windows builds. The darwin binaries
+# ship un-UPX'd — users on macOS are typically already on Apple Silicon
+# and a 7 MB binary there is fine.
 upx:
   - enabled: true
-  - compress: best
-  - lzma: false
+    compress: best
+    lzma: false
+    goos:
+      - linux
+      - windows
 
 checksum:
   name_template: 'checksums.txt'
