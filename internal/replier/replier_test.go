@@ -280,15 +280,15 @@ func plaintextDialer(srvAddr string) func(string, string, bool) (net.Conn, error
 }
 
 // newReplierForFakeSMTP builds a Replier that talks plaintext to the fake.
-// cfg.SMTPAddr is set to the fake's listening address so splitHostPort works.
+// smtpAddr is set to the fake's listening address so splitHostPort works.
 func newReplierForFakeSMTP(fakeAddr string, maxAttempts int) *Replier {
 	return &Replier{
 		cfg: &config.Config{
-			Email:     "agent@perch.test",
-			AuthCode:  "anything",
-			SMTPAddr:  fakeAddr,
+			Email:       "agent@perch.test",
+			AuthCode:    "anything",
 			TLSInsecure: true,
 		},
+		smtpAddr:    fakeAddr,
 		MaxAttempts: maxAttempts,
 		retryDelay:  5 * time.Millisecond,
 		dial:        plaintextDialer(fakeAddr),

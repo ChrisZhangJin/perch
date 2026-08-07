@@ -35,9 +35,10 @@ type IMAPMailbox struct {
 // Some providers (e.g. 163) do not, in which case perch runs in poll-only mode.
 func (m *IMAPMailbox) IdleSupported() bool { return m.idleSupported }
 
-// Dial connects with implicit TLS, sends the IMAP ID command (163 requires it),
+// Dial connects with implicit TLS to imapAddr (resolved by the provider
+// registry in cmd/perch/main.go), sends the IMAP ID command (163 requires it),
 // logs in with the authorization code, and selects INBOX.
-func Dial(cfg *config.Config) (*IMAPMailbox, error) {
+func Dial(cfg *config.Config, imapAddr string) (*IMAPMailbox, error) {
 	m := &IMAPMailbox{cfg: cfg}
 	opts := &imapclient.Options{
 		TLSConfig: &tls.Config{InsecureSkipVerify: cfg.TLSInsecure}, //nolint:gosec // dev/test-only, gated by TLS_INSECURE_SKIP_VERIFY
@@ -49,7 +50,7 @@ func Dial(cfg *config.Config) (*IMAPMailbox, error) {
 			},
 		},
 	}
-	c, err := imapclient.DialTLS(cfg.IMAPAddr, opts)
+	c, err := imapclient.DialTLS(imapAddr, opts)
 	if err != nil {
 		return nil, err
 	}

@@ -124,7 +124,8 @@ func ComposeWithAttachments(fromAddr, to, subject, inReplyTo string, references 
 }
 
 type Replier struct {
-	cfg *config.Config
+	cfg      *config.Config
+	smtpAddr string // resolved by provider registry in main; empty => legacy fallback (none after MVP)
 	// MaxAttempts is the upper bound on SMTP send attempts (incl. the first).
 	// Defaults to 3 if zero. Each retry opens a fresh TLS+SMTP session.
 	MaxAttempts int
@@ -140,7 +141,9 @@ type Replier struct {
 	dial func(addr, host string, insecure bool) (net.Conn, error)
 }
 
-func New(cfg *config.Config) *Replier { return &Replier{cfg: cfg} }
+// New wires a Replier. smtpAddr comes from the provider registry
+// (e.g. "smtp.163.com:465"); main.go resolves it after config.Load.
+func New(cfg *config.Config, smtpAddr string) *Replier { return &Replier{cfg: cfg, smtpAddr: smtpAddr} }
 
 // SetHook installs a per-attempt hook. Intended for app-level logging +
 // failure-notification wiring. Pass nil to clear.
@@ -198,7 +201,7 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 
 // sendOnce dials SMTP + sends one DATA transaction with proper RSET on failure.
 func (r *Replier) sendOnce(to string, msg []byte) error {
-	host, _, err := splitHostPort(r.cfg.SMTPAddr)
+	host, _, err := splitHostPort(r.smtpAddr)
 	if err != nil {
 		return fmt.Errorf("smtp addr: %w", err)
 	}
@@ -206,7 +209,7 @@ func (r *Replier) sendOnce(to string, msg []byte) error {
 	if dialer == nil {
 		dialer = defaultDial
 	}
-	conn, err := dialer(r.cfg.SMTPAddr, host, r.cfg.TLSInsecure)
+	conn, err := dialer(r.smtpAddr, host, r.cfg.TLSInsecure)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
@@ -269,7 +272,7 @@ func defaultDial(addr, host string, insecure bool) (net.Conn, error) {
 // Subject is prefixed with "Perch failed: " so the user can filter. The body
 // includes the last error verbatim, attempt count, message size, and timestamp.
 func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []string, attempts int, lastErr error, msgSize int) error {
-	host, _, err := splitHostPort(r.cfg.SMTPAddr)
+	host, _, err := splitHostPort(r.smtpAddr)
 	if err != nil {
 		return err
 	}
@@ -292,7 +295,7 @@ func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []stri
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err := func() error {
-			conn, err := dialer(r.cfg.SMTPAddr, host, r.cfg.TLSInsecure)
+			conn, err := dialer(r.smtpAddr, host, r.cfg.TLSInsecure)
 			if err != nil {
 				return fmt.Errorf("smtp dial: %w", err)
 			}

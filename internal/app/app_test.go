@@ -67,7 +67,7 @@ const badEML = "From: mallory@evil.com\r\nSubject: pwn\r\nMessage-ID: <m2@evil.c
 
 func newTestApp(t *testing.T, mb Mailbox, run TaskRunner, rep ReplySender) *App {
 	t.Helper()
-	cfg := &config.Config{MaxPromptBytes: 4096, ClaudeWorkdir: t.TempDir()}
+	cfg := &config.Config{MaxPromptBytes: 4096, AgentWorkdir: t.TempDir()}
 	g, err := gate.New([]string{"alice@163.com"})
 	if err != nil {
 		t.Fatal(err)
