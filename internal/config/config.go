@@ -14,6 +14,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -152,6 +153,20 @@ func applyYAML(c *Config, path string) error {
 	if len(data) == 0 {
 		return nil
 	}
+
+	// Deprecated-key scan: walk the raw yaml.Node tree, log a WARN per hit.
+	// New-schema decode below ignores these keys, but we want the user to
+	// know they should clean up their file.
+	deprecated := []string{
+		"imap_addr", "smtp_addr",
+		"agent_bin", "claude_workdir", "claude_permission_mode",
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return err
+	}
+	warnDeprecated(&node, deprecated)
+
 	var y yamlConfig
 	if err := yaml.Unmarshal(data, &y); err != nil {
 		return err
@@ -190,6 +205,64 @@ func applyYAML(c *Config, path string) error {
 		c.TLSInsecure = y.TLSInsecure
 	}
 	return nil
+}
+
+// warnDeprecated walks the yaml.Node tree (which is a DocumentNode at the
+// root when parsed from raw bytes) and emits a slog.Warn for every mapping
+// key whose name appears in `keys`. Nested mappings are scanned recursively.
+func warnDeprecated(n *yaml.Node, keys []string) {
+	if n == nil {
+		return
+	}
+	keyset := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		keyset[k] = struct{}{}
+	}
+	var walk func(*yaml.Node)
+	walk = func(node *yaml.Node) {
+		if node == nil {
+			return
+		}
+		if node.Kind == yaml.DocumentNode {
+			walk(node.Content[0])
+			return
+		}
+		if node.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				k := node.Content[i]
+				v := node.Content[i+1]
+				if ks := k.Value; ks != "" {
+					if _, hit := keyset[ks]; hit {
+						slog.Warn("deprecated config key ignored; remove and use new schema",
+							"key", ks, "replacement", replacement(ks))
+					}
+				}
+				walk(v)
+			}
+			return
+		}
+		if node.Kind == yaml.SequenceNode {
+			for _, c := range node.Content {
+				walk(c)
+			}
+		}
+	}
+	walk(n)
+}
+
+// replacement maps each deprecated key to a one-line hint for the WARN log.
+func replacement(k string) string {
+	switch k {
+	case "imap_addr", "smtp_addr":
+		return "email_provider.name (163 / 126 / qq)"
+	case "agent_bin":
+		return "ai_agent.name (claude / nanopi / pi)"
+	case "claude_workdir":
+		return "ai_agent.workdir"
+	case "claude_permission_mode":
+		return "ai_agent.permission_mode"
+	}
+	return ""
 }
 
 // applyEnv overlays env vars onto c. This is the highest-precedence layer.
