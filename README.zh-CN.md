@@ -89,11 +89,10 @@ perch 从三层加载配置,优先级由高到低:
 | `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱(只能从环境变量,有一定机密性) |
 | `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码(只能从环境变量) |
 | `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`、`s".*agent.*@qq\.com"`、`s"(?i).+@trusted\.org"`)。正则启动时编译,坏正则立刻让 gate 构建失败(perch 绝不在 fail-open 状态下启动)。`ALLOW_FROM` 环境变量只承载字面量。 |
-| `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | 隐式 TLS |
-| `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | 隐式 TLS |
-| `agent_bin` / `CLAUDE_BIN` | | `claude` | 要拉起的 agent CLI |
-| `agent_workdir` / `CLAUDE_WORKDIR` | | `.` | agent 的工作目录 |
-| `agent_permission_mode` / `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | 让 agent 的工具非交互式运行 |
+| `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — 自动推导端点 |
+| `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — 自动推导二进制 |
+| `ai_agent.workdir`          | —                 | `.`              | 拉起的 agent 工作目录 |
+| `ai_agent.permission_mode`  | —                 | `acceptEdits`    | 仅 claude；nanopi/pi 忽略 |
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | 轮询间隔 / IDLE 保活 |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | 超时后 SIGTERM→5s→SIGKILL |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | 截断超大邮件正文 |
@@ -107,7 +106,6 @@ perch 从三层加载配置,优先级由高到低:
 AGENT_EMAIL=agent@163.com \
 AGENT_AUTH_CODE=你的授权码 \
 ALLOW_FROM=alice@163.com \
-CLAUDE_WORKDIR=/home/agent/workspace \
 ./perch
 ```
 
@@ -119,7 +117,8 @@ poll_interval: 5s
 allow_from:
   - alice@163.com
   - s".+@(foo|bar)\.example\.com"      # 正则:foo/bar.example.com 下任何用户
-agent_workdir: /home/agent/workspace
+ai_agent:
+  workdir: /home/agent/workspace
 ```
 
 ```bash

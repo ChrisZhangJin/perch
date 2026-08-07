@@ -1,27 +1,36 @@
 # perch.yaml.example — example configuration for perch.
 #
-# Copy this file to `perch.yaml` (or `~/.config/perch/perch.yaml`) and
-# edit. At startup perch loads the YAML file at this path, then layers
-# env vars on top, then falls back to built-in defaults. Precedence:
+# Copy this file to `perch.yaml` (or `~/.config/perch/perch.yaml`) and edit.
+# At startup perch loads the YAML file at this path, then layers env vars on
+# top, then falls back to built-in defaults. Precedence:
 #
 #     env vars  >  this YAML file  >  built-in defaults
 #
 # Secrets (AGENT_AUTH_CODE) MUST be set via env, never committed here.
 # See README.md / docs/DESIGN.md for the full design.
+#
+# First-run wizard: if any required field is missing AND stdin is a TTY,
+# perch prompts for the missing fields interactively and writes the
+# non-secret values to ~/.config/perch/perch.yaml (0600).
 
-# --- Mailbox (IMAP) --------------------------------------------------------
-# Implicit-TLS IMAP endpoint. 163 default; override for other providers.
-imap_addr: imap.163.com:993
-# imap_addr: imap.gmail.com:993         # Gmail / Workspace
-# imap_addr: imap-mail.outlook.com:993  # Outlook / Microsoft 365
-# imap_addr: imap.fastmail.com:993      # Fastmail
-# imap_addr: 127.0.0.1:3993             # local GreenMail (dev)
+# --- Email provider --------------------------------------------------------
+# Built-in names. Each one bakes in the right IMAP/SMTP endpoints and the
+# per-provider transport quirks (IMAP ID requirement, IDLE support).
+email_provider:
+  name: 163           # 163 | 126 | qq
+  # name: 126
+  # name: qq
 
-# --- Outbound (SMTP) -------------------------------------------------------
-# Implicit-TLS SMTP endpoint (port 465 = implicit TLS; 587 = STARTTLS, also OK).
-smtp_addr: smtp.163.com:465
-# smtp_addr: smtp.gmail.com:465
-# smtp_addr: smtp-mail.outlook.com:587
+# --- AI agent --------------------------------------------------------------
+# Built-in names. Each one bakes in the right argv adapter (session-id /
+# resume / yolo, etc.).
+ai_agent:
+  name: claude        # claude | nanopi | pi
+  workdir: .          # cwd for the spawned agent
+  permission_mode: acceptEdits   # claude only; ignored by nanopi/pi
+                       #   acceptEdits        — auto-allow file edits
+                       #   bypassPermissions  — auto-allow ALL tools
+                       #   plan               — read-only planning mode
 
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone.
@@ -45,15 +54,6 @@ allow_from:
   # - bob@example.com
   # - s".+@(foo|bar)\.example\.com"
 
-# --- Agent runner ----------------------------------------------------------
-# Any `-p "<prompt>"` CLI works. Default = Claude Code.
-agent_bin: claude                       # CLAUDE_BIN
-agent_workdir: /home/agent/workspace    # CLAUDE_WORKDIR (cwd for the spawned agent)
-agent_permission_mode: acceptEdits      # CLAUDE_PERMISSION_MODE
-                                        #   acceptEdits        — auto-allow file edits
-                                        #   bypassPermissions  — auto-allow ALL tools
-                                        #   plan               — read-only planning mode
-
 # --- Loop timing -----------------------------------------------------------
 poll_interval: 60s                       # POLL_INTERVAL (poll tick / IDLE keepalive)
                                          #   lower this if your server is poll-only
@@ -69,8 +69,8 @@ max_attachment_bytes: 52428800          # MAX_ATTACHMENT_BYTES (per-attachment s
                                          #   the email still parses)
 
 # --- Persistence -----------------------------------------------------------
-# Thread-root → Claude session UUID map (JSON). Survives restarts so a
-# reply in the same thread resumes the same agent session.
+# Thread-root → agent session UUID map (JSON). Survives restarts so a reply
+# in the same thread resumes the same agent session.
 # session_store: /var/lib/perch/sessions.json
 # session_store: ./perch-sessions.json
 # (default: $TMPDIR/perch-sessions.json)

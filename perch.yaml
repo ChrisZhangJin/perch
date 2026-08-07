@@ -11,14 +11,15 @@
 #
 # Secrets (AGENT_AUTH_CODE) MUST be set via env, never committed here.
 
-# --- Mailbox (IMAP) --------------------------------------------------------
-imap_addr: imap.163.com:993          # IMAP_ADDR (implicit TLS)
-# imap_addr: imap.gmail.com:993      # Gmail/Outlook/Fastmail/Dovecot
-# smtp_addr: smtp.gmail.com:465
+# --- Email provider --------------------------------------------------------
+email_provider:
+  name: 163              # 163 | 126 | qq (IMAP/SMTP endpoints derived)
 
-# --- Outbound (SMTP) -------------------------------------------------------
-smtp_addr: smtp.163.com:465          # SMTP_ADDR (implicit TLS)
-# smtp_addr: smtp.gmail.com:465
+# --- AI agent --------------------------------------------------------------
+ai_agent:
+  name: claude           # claude | nanopi | pi (binary + argv derived)
+  workdir: .             # cwd for the spawned agent
+  permission_mode: acceptEdits
 
 # --- Whitelist -------------------------------------------------------------
 # Empty list = deny everyone (safer default).
@@ -27,13 +28,6 @@ allow_from:
   - zhangjin0602@126.com
   # - alice@163.com
   # - bob@example.com
-
-# --- Agent runner ----------------------------------------------------------
-# Any `-p "<prompt>"` CLI works. Default `claude` = Claude Code.
-agent_bin: claude                    # CLAUDE_BIN
-agent_workdir: .                     # CLAUDE_WORKDIR (cwd for the spawned agent)
-agent_permission_mode: acceptEdits   # CLAUDE_PERMISSION_MODE
-                                     # (acceptEdits | bypassPermissions | plan | …)
 
 # --- Loop timing -----------------------------------------------------------
 poll_interval: 60s                    # POLL_INTERVAL (poll tick / IDLE keepalive)

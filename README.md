@@ -95,11 +95,10 @@ from the YAML file.
 | `AGENT_EMAIL` | ✅ | — | the mailbox perch watches (env only — secret-ish) |
 | `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password (env only) |
 | `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`, `s".*agent.*@qq\.com"`, `s"(?i).+@trusted\.org"`). Regexes are compiled at startup; a bad pattern fails the gate immediately (perch never starts in a fail-open state). `ALLOW_FROM` env var carries only literals. |
-| `imap_addr` / `IMAP_ADDR` | | `imap.163.com:993` | implicit TLS |
-| `smtp_addr` / `SMTP_ADDR` | | `smtp.163.com:465` | implicit TLS |
-| `agent_bin` / `CLAUDE_BIN` | | `claude` | the agent CLI to spawn |
-| `agent_workdir` / `CLAUDE_WORKDIR` | | `.` | working dir for the agent |
-| `agent_permission_mode` / `CLAUDE_PERMISSION_MODE` | | `acceptEdits` | so agent tools run non-interactively |
+| `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — endpoints derived |
+| `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — binary derived |
+| `ai_agent.workdir`          | —                 | `.`              | cwd for the spawned agent |
+| `ai_agent.permission_mode`  | —                 | `acceptEdits`    | claude only; ignored by nanopi/pi |
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | poll interval / IDLE keepalive |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | SIGTERM→5s→SIGKILL after this |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | truncate huge email bodies |
@@ -113,7 +112,6 @@ from the YAML file.
 AGENT_EMAIL=agent@163.com \
 AGENT_AUTH_CODE=xxxxxxxx \
 ALLOW_FROM=alice@163.com \
-CLAUDE_WORKDIR=/home/agent/workspace \
 ./perch
 ```
 
@@ -125,7 +123,8 @@ poll_interval: 5s
 allow_from:
   - alice@163.com
   - s".+@(foo|bar)\.example\.com"      # regex: any user on foo/bar .example.com
-agent_workdir: /home/agent/workspace
+ai_agent:
+  workdir: /home/agent/workspace
 ```
 
 ```bash
