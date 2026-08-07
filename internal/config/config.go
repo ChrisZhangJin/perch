@@ -92,16 +92,10 @@ func Load(cfgPath string) (*Config, error) {
 	// 3. Env layer (highest priority; overrides YAML + defaults).
 	applyEnv(c)
 
-	// 4. Required-field gate. Secrets come from env only.
-	if c.Email == "" || c.AuthCode == "" {
-		return nil, fmt.Errorf(
-			"AGENT_EMAIL and AGENT_AUTH_CODE are required. " +
-				"perch reads credentials from env vars only — never from the YAML file. " +
-				"Run it like:\n" +
-				"  AGENT_EMAIL=you@163.com AGENT_AUTH_CODE='<your 163 authcode>' ./bin/perch\n" +
-				"(tip: keep the auth code in an untracked file like ./grant.code, then " +
-				"AGENT_AUTH_CODE=\"$(cat ./grant.code)\" ./bin/perch)")
-	}
+	// No required-field gate here. setup.Ensure owns the missing-creds policy:
+	// it runs the wizard interactively, returns ErrMissingFields when
+	// non-interactive + missing, and is a no-op when both fields are set.
+	// Gating here would block first-time users from ever reaching the wizard.
 	return c, nil
 }
 

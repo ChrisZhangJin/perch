@@ -50,15 +50,6 @@ func TestLoadReadsEnvAndDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadMissingRequiredFails(t *testing.T) {
-	withCleanEnv(t)
-	t.Setenv("AGENT_EMAIL", "")
-	t.Setenv("AGENT_AUTH_CODE", "")
-	if _, err := Load(""); err == nil {
-		t.Fatal("expected error when required env missing")
-	}
-}
-
 func TestLoadAppliesYAMLNewSchema(t *testing.T) {
 	withCleanEnv(t)
 	yaml := []byte(`

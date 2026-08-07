@@ -117,7 +117,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		prompt := runner.BuildPrompt(m.From, m.Subject, m.Body, saved, rpDir)
 		out, err := a.run.Run(ctx, prompt, sid, isNew)
 		if err != nil {
-			a.log.Error("claude run failed", "from", m.From, "err", err)
+			a.log.Error("agent run failed", "from", m.From, "err", err)
 			_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
 				"Sorry, the task failed to complete: "+err.Error(), nil)
 			_ = a.mb.MarkSeen(ctx, m.UID)
