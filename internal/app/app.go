@@ -129,6 +129,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		}
 		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), out, files); err != nil {
 			a.log.Error("reply failed", "from", m.From, "err", err)
+			a.notifyReplyFailure(m, out, files, err)
 			continue // leave unseen so a later poll retries the reply
 		}
 		if len(files) > 0 {
@@ -138,6 +139,35 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		a.log.Info("task done", "from", m.From, "subject", m.Subject, "session", sid, "resumed", !isNew, "files", len(files), "message_id", m.MessageID)
 	}
 	return nil
+}
+
+// FailureNotifier is an optional extension of ReplySender. If implemented,
+// perch sends a "Perch failed:" notification to the original sender after
+// the reply has exhausted its retries, so the human can see the failure
+// instead of waiting forever for a reply that will never come.
+type FailureNotifier interface {
+	NotifyFailure(to, subject, inReplyTo string, references []string, attempts int, lastErr error, msgSize int) error
+}
+
+// notifyReplyFailure sends the optional failure notification if the reply
+// sender implements it. Failure-to-notify is itself logged but never blocks
+// the loop — we've already exhausted retries on the real reply.
+func (a *App) notifyReplyFailure(m *message.Message, body string, attachments []string, lastErr error) {
+	n, ok := a.rep.(FailureNotifier)
+	if !ok {
+		return
+	}
+	// Estimate reply size for the report (best-effort; matches what was attempted).
+	msgSize := len(body)
+	for _, p := range attachments {
+		if info, err := os.Stat(p); err == nil {
+			msgSize += int(info.Size())
+		}
+	}
+	if err := n.NotifyFailure(m.From, m.Subject, m.MessageID,
+		appendRef(m.References, m.MessageID), 3, lastErr, msgSize); err != nil {
+		a.log.Error("failure notification send failed", "from", m.From, "err", err)
+	}
 }
 
 // Run alternates processing and IDLE-with-timeout on a single connection:
