@@ -7,9 +7,9 @@
 //  3. Built-in defaults (see defaults()).
 //
 // Secrets (the 163 auth code) MUST be set via env and are never committed to
-// the YAML file. The required-AGENT_EMAIL / AGENT_AUTH_CODE check still runs
-// after layering, so the YAML can hold non-secret defaults and the env can
-// inject the credentials.
+// the YAML file. IMAP/SMTP endpoints and the agent binary are resolved at
+// startup via internal/provider and internal/agent — this package stays pure
+// data.
 package config
 
 import (
@@ -24,18 +24,19 @@ import (
 )
 
 // Config holds all runtime settings. Field names are the source of truth;
-// YAML tags map snake_case keys, env tags map the legacy AGENT_* / CLAUDE_*
-// / IMAP_* / SMTP_ADDR / POLL_INTERVAL / TASK_TIMEOUT / MAX_PROMPT_BYTES /
-// SESSION_STORE / TLS_INSECURE_SKIP_VERIFY names.
+// YAML tags map the new email_provider / ai_agent blocks; env tags map the
+// AGENT_* / ALLOW_FROM / *_INTERVAL / *_TIMEOUT / MAX_* / SESSION_STORE /
+// TLS_INSECURE_SKIP_VERIFY names. The IMAP/SMTP endpoints and the agent
+// binary are NOT here — they're resolved from cfg.ProviderName /
+// cfg.AgentName in main.go via the provider and agent packages.
 type Config struct {
 	Email              string
 	AuthCode           string
-	IMAPAddr           string
-	SMTPAddr           string
+	ProviderName       string // "163" | "126" | "qq"
+	AgentName          string // "claude" | "nanopi" | "pi"
+	AgentWorkdir       string
+	AgentPermMode      string // claude only; ignored by nanopi/pi
 	AllowFrom          []string
-	ClaudeBin          string
-	ClaudeWorkdir      string
-	ClaudePermMode     string
 	PollInterval       time.Duration
 	TaskTimeout        time.Duration
 	MaxPromptBytes     int
@@ -44,21 +45,26 @@ type Config struct {
 	TLSInsecure        bool
 }
 
-// yamlConfig mirrors Config with snake_case keys + a few non-secret
-// only fields (no AuthCode is ever read from disk).
+// yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
+// keys (imap_addr, smtp_addr, agent_bin, claude_workdir, claude_permission_mode)
+// are intentionally NOT here — applyYAML detects them via a raw yaml.Node
+// pass and emits a WARN (see Task 7). AuthCode is never read from disk.
 type yamlConfig struct {
-	IMAPAddr            string        `yaml:"imap_addr"`
-	SMTPAddr            string        `yaml:"smtp_addr"`
-	AllowFrom           []string      `yaml:"allow_from"`
-	AgentBin            string        `yaml:"agent_bin"`
-	AgentWorkdir        string        `yaml:"agent_workdir"`
-	AgentPermissionMode string        `yaml:"agent_permission_mode"`
-	PollInterval        time.Duration `yaml:"poll_interval"`
-	TaskTimeout         time.Duration `yaml:"task_timeout"`
-	MaxPromptBytes      int           `yaml:"max_prompt_bytes"`
-	MaxAttachmentBytes  int           `yaml:"max_attachment_bytes"`
-	SessionStore        string        `yaml:"session_store"`
-	TLSInsecure         bool          `yaml:"tls_insecure_skip_verify"`
+	EmailProvider struct {
+		Name string `yaml:"name"`
+	} `yaml:"email_provider"`
+	AIAgent struct {
+		Name           string `yaml:"name"`
+		Workdir        string `yaml:"workdir"`
+		PermissionMode string `yaml:"permission_mode"`
+	} `yaml:"ai_agent"`
+	AllowFrom          []string      `yaml:"allow_from"`
+	PollInterval       time.Duration `yaml:"poll_interval"`
+	TaskTimeout        time.Duration `yaml:"task_timeout"`
+	MaxPromptBytes     int           `yaml:"max_prompt_bytes"`
+	MaxAttachmentBytes int           `yaml:"max_attachment_bytes"`
+	SessionStore       string        `yaml:"session_store"`
+	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
 }
 
 // Load reads the YAML file at cfgPath (or the default search path), layers
@@ -102,11 +108,10 @@ func Load(cfgPath string) (*Config, error) {
 // overridden by YAML or env; this is the bottom of the stack.
 func defaults() *Config {
 	return &Config{
-		IMAPAddr:           "imap.163.com:993",
-		SMTPAddr:           "smtp.163.com:465",
-		ClaudeBin:          "claude",
-		ClaudeWorkdir:      ".",
-		ClaudePermMode:     "acceptEdits",
+		ProviderName:       "163",
+		AgentName:          "claude",
+		AgentWorkdir:       ".",
+		AgentPermMode:      "acceptEdits",
 		PollInterval:       60 * time.Second,
 		TaskTimeout:        30 * time.Minute,
 		MaxPromptBytes:     65536,
@@ -151,23 +156,20 @@ func applyYAML(c *Config, path string) error {
 	if err := yaml.Unmarshal(data, &y); err != nil {
 		return err
 	}
-	if y.IMAPAddr != "" {
-		c.IMAPAddr = y.IMAPAddr
+	if y.EmailProvider.Name != "" {
+		c.ProviderName = y.EmailProvider.Name
 	}
-	if y.SMTPAddr != "" {
-		c.SMTPAddr = y.SMTPAddr
+	if y.AIAgent.Name != "" {
+		c.AgentName = y.AIAgent.Name
+	}
+	if y.AIAgent.Workdir != "" {
+		c.AgentWorkdir = y.AIAgent.Workdir
+	}
+	if y.AIAgent.PermissionMode != "" {
+		c.AgentPermMode = y.AIAgent.PermissionMode
 	}
 	if len(y.AllowFrom) > 0 {
 		c.AllowFrom = normalizeList(y.AllowFrom)
-	}
-	if y.AgentBin != "" {
-		c.ClaudeBin = y.AgentBin
-	}
-	if y.AgentWorkdir != "" {
-		c.ClaudeWorkdir = y.AgentWorkdir
-	}
-	if y.AgentPermissionMode != "" {
-		c.ClaudePermMode = y.AgentPermissionMode
 	}
 	if y.PollInterval != 0 {
 		c.PollInterval = y.PollInterval
@@ -198,23 +200,8 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("AGENT_AUTH_CODE"); v != "" {
 		c.AuthCode = v
 	}
-	if v := os.Getenv("IMAP_ADDR"); v != "" {
-		c.IMAPAddr = v
-	}
-	if v := os.Getenv("SMTP_ADDR"); v != "" {
-		c.SMTPAddr = v
-	}
 	if v := os.Getenv("ALLOW_FROM"); v != "" {
 		c.AllowFrom = normalizeList(strings.Split(v, ","))
-	}
-	if v := os.Getenv("CLAUDE_BIN"); v != "" {
-		c.ClaudeBin = v
-	}
-	if v := os.Getenv("CLAUDE_WORKDIR"); v != "" {
-		c.ClaudeWorkdir = v
-	}
-	if v := os.Getenv("CLAUDE_PERMISSION_MODE"); v != "" {
-		c.ClaudePermMode = v
 	}
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
