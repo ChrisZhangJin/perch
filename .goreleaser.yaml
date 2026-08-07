@@ -1,0 +1,116 @@
+# GoReleaser config — https://goreleaser.com
+#
+# Triggered by `.github/workflows/release.yml` on `v*` tags. Produces
+# cross-platform static binaries (UPX-compressed), checksums, and a
+# CHANGELOG.md snapshot attached to the GitHub release.
+
+version: 2
+
+project_name: perch
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: perch
+    main: ./cmd/perch
+    binary: perch
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -s
+      - -w
+    ldflags:
+      # inject the resolved git tag as main.version
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # musl for static linux binaries — no glibc dependency on the runner.
+    ignore:
+      - goos: windows
+        goarch: arm64   # windows/arm64 is not yet a stable Go target
+
+archives:
+  - id: perch
+    formats:
+      - tar.gz
+    # archives are named after the binary + version + os/arch, e.g.
+    # perch_0.1.0_linux_amd64.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - README.zh-CN.md
+      - LICENSE
+      - perch.yaml
+      - perch.yaml.example
+      - docs/**
+
+# UPX pass after GoReleaser archives each binary. Same flag set as the
+# Makefile so a release binary matches what `make build` produces locally.
+upx:
+  - enabled: true
+  - compress: best
+  - lzma: false
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .ShortCommit }}"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "merge branch"
+      - "Merge branch"
+  groups:
+    - title: Features
+      regexp: "^feat"
+    - title: Bug fixes
+      regexp: "^fix"
+    - title: Other
+      regexp: ".*"
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## perch {{ .Tag }}
+
+    A resident Go daemon that turns an ordinary mailbox into a wake-on-email
+    trigger for a CLI coding agent. For whitelisted senders only, runs the
+    agent on each message and replies in-thread.
+
+    **Binaries:** UPX-compressed, statically linked, no runtime deps. SHA256
+    checksums in `checksums.txt`. Extract anywhere on `$PATH`.
+
+    ```sh
+    # example: linux/amd64
+    tar xzf perch_{{ .Version }}_Linux_x86_64.tar.gz
+    ./perch --help
+    ```
+  footer: |
+    Built with GoReleaser. See [README](https://github.com/ChrisZhangJin/perch#readme)
+    for configuration, security model, and testing levels.
