@@ -52,7 +52,7 @@ implementation lands. The MVP does not depend on the answer.
 |----------|----------|------------------------------------------------------|
 | `claude` | `claude` | `--session-id <uuid>` (new) / `--resume <uuid>` (resume) |
 | `nanopi` | `nanopi` | `--session <uuid>` (resume) — `-c` / `--continue` is "most recent for cwd" and not a substitute |
-| `pi`     | `pi`     | **to be verified** against the Pi monorepo before implementation |
+| `pi`     | `pi`     | `--session-id <uuid>` (new) / `--session <uuid>` (resume) |
 
 The agent table is open for new adapters later, but the MVP does not
 ship a "custom binary" escape hatch.
@@ -157,7 +157,7 @@ Adapter table:
 |----------|----------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
 | `claude` | `["-p", prompt, "--output-format", "text", "--permission-mode", perm, "--session-id", sid]` | `["-p", prompt, "--output-format", "text", "--permission-mode", perm, "--resume", sid]` |
 | `nanopi` | `["-p", prompt, "--yolo", "--output", "text", "--session", sid]`                | same                                                                            |
-| `pi`     | **TBD** — verify against the Pi monorepo source before implementation           | **TBD**                                                                          |
+| `pi`     | `["-p", prompt, "--mode", "text", "--session-id", sid]` | `["-p", prompt, "--mode", "text", "--session", sid]` |
 
 `nanopi` does not distinguish new vs resume (both use `--session
 <sid>`); the `IsNew` flag is ignored. `claude` uses `--session-id`
@@ -297,8 +297,8 @@ exit 2
   regression).
 - `TestAgentBuildArgs_Nanopi` — assert prompt + `--yolo` +
   `--session` regardless of IsNew.
-- `TestAgentBuildArgs_Pi` — placeholder with TODO; skips until the Pi
-  flag shape is verified.
+- `TestAgentBuildArgs_PiNew` / `TestAgentBuildArgs_PiResume` —
+  assert `--session-id` vs `--session` distinction.
 - `TestAgentLookupUnknown`.
 
 ### `internal/setup/wizard_test.go`
@@ -324,12 +324,10 @@ exit 2
 
 1. **126 vs 163 transport differences** — confirm by manual test on a
    126 mailbox before the v0.3.0 release. Not blocking the MVP.
-2. **Pi CLI flag verification** — read `/root/workspace/pi/packages/coding-agent/src/cli.ts`
-   (or run `pi --help` once it's installed) to confirm Pi's session
-   flag shape; record the answer in
-   `internal/agent/adapters.go`. The placeholder will be `panic("pi
-   adapter not implemented yet")` so the code fails loud rather than
-   silent.
+2. **Pi CLI flag verification** — done. Confirmed against
+   `/root/workspace/pi/packages/coding-agent/src/cli/args.ts`:
+   `-p` / `--print`, `--session-id <id>` (new), `--session <id>` (resume).
+   Recorded in `internal/agent/adapters.go`.
 3. **Gmail** — separate design pass covering OAuth 2.0 (XOAUTH2) and
    App Password. Out of scope here.
 4. **Custom provider / agent escape hatch** — not in MVP. If users
