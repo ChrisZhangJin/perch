@@ -110,7 +110,7 @@ func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) e
 	if allowRaw != "" {
 		cfg.AllowFrom = splitAndTrim(allowRaw)
 	}
-	cfg.Email = prompt(in, out, "Agent email (env var AGENT_EMAIL; can't write to disk)", cfg.Email, "")
+	cfg.Email = prompt(in, out, "Agent email (env var AGENT_EMAIL overrides; otherwise saved here)", cfg.Email, "")
 
 	fmt.Fprint(out, "Mailbox authorization code (env var AGENT_AUTH_CODE; not written to disk):\nPassword: ")
 	pwBytes, err := pw(int(os.Stdin.Fd()))
@@ -162,8 +162,8 @@ func splitAndTrim(s string) []string {
 }
 
 // persist writes the non-secret fields of cfg to ~/.config/perch/perch.yaml
-// with mode 0600. The file gets a header comment listing the env vars that
-// should hold the secrets.
+// with mode 0600. AuthCode is NEVER written — only AGENT_AUTH_CODE env var.
+// Email IS written so unattended restarts don't have to re-enter it.
 func persist(cfg *config.Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -176,6 +176,7 @@ func persist(cfg *config.Config) error {
 	path := filepath.Join(dir, "perch.yaml")
 
 	type persisted struct {
+		Email         string   `yaml:"email"`
 		EmailProvider struct {
 			Name string `yaml:"name"`
 		} `yaml:"email_provider"`
@@ -187,6 +188,7 @@ func persist(cfg *config.Config) error {
 		AllowFrom []string `yaml:"allow_from"`
 	}
 	var p persisted
+	p.Email = cfg.Email
 	p.EmailProvider.Name = cfg.ProviderName
 	p.AIAgent.Name = cfg.AgentName
 	p.AIAgent.Workdir = cfg.AgentWorkdir
@@ -198,6 +200,7 @@ func persist(cfg *config.Config) error {
 		return err
 	}
 	header := []byte("# perch configuration (written by setup wizard).\n" +
-		"# Secrets live in env vars, not here: AGENT_EMAIL, AGENT_AUTH_CODE.\n\n")
+		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
+		"# AGENT_EMAIL is read from this file when not set in env.\n\n")
 	return os.WriteFile(path, append(header, body...), 0o600)
 }

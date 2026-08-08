@@ -51,7 +51,8 @@ type Config struct {
 // are intentionally NOT here — applyYAML detects them via a raw yaml.Node
 // pass and emits a WARN (see Task 7). AuthCode is never read from disk.
 type yamlConfig struct {
-	EmailProvider struct {
+	Email              string        `yaml:"email"`
+	EmailProvider      struct {
 		Name string `yaml:"name"`
 	} `yaml:"email_provider"`
 	AIAgent struct {
@@ -72,9 +73,9 @@ type yamlConfig struct {
 // env vars on top, then applies built-in defaults for anything still empty.
 // cfgPath == "" means: search default locations.
 //
-// Required fields (AGENT_EMAIL, AGENT_AUTH_CODE) are still taken from the env
-// only — they never come from the YAML file. This is intentional: a committed
-// YAML must not be able to leak credentials.
+// AuthCode is taken from the env only — it never comes from the YAML file.
+// Email CAN be read from YAML (written there by the setup wizard) but env
+// `AGENT_EMAIL` always overrides it.
 func Load(cfgPath string) (*Config, error) {
 	// 1. Built-in defaults.
 	c := defaults()
@@ -164,6 +165,9 @@ func applyYAML(c *Config, path string) error {
 	var y yamlConfig
 	if err := yaml.Unmarshal(data, &y); err != nil {
 		return err
+	}
+	if y.Email != "" {
+		c.Email = y.Email
 	}
 	if y.EmailProvider.Name != "" {
 		c.ProviderName = y.EmailProvider.Name
