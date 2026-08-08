@@ -86,8 +86,8 @@ perch 从三层加载配置,优先级由高到低:
 
 | 变量 / YAML key | 必填 | 默认 | 说明 |
 |---|:---:|---|---|
-| `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱(只能从环境变量,有一定机密性) |
-| `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码(只能从环境变量) |
+| `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱。环境变量优先,否则读 YAML 里的 `email:`(首次运行向导写入)。 |
+| `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码。只能从环境变量注入,绝不写盘。 |
 | `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`、`s".*agent.*@qq\.com"`、`s"(?i).+@trusted\.org"`)。正则启动时编译,坏正则立刻让 gate 构建失败(perch 绝不在 fail-open 状态下启动)。`ALLOW_FROM` 环境变量只承载字面量。 |
 | `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — 自动推导端点 |
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — 自动推导二进制 |
@@ -124,6 +124,34 @@ ai_agent:
 ```bash
 AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=你的授权码 ./perch
 ```
+
+### 首次运行向导 vs 无人值守重启
+
+首次运行时,如果 stdin 是 TTY 且必填字段缺失,perch 会启动交互式向导,把非机密字段(邮箱服务商、AI agent、workdir、permission_mode、allow_from、邮箱)写到 `~/.config/perch/perch.yaml`(权限 0600),并通过 `ReadPassword` 提示输入授权码(不回显、不落盘)。
+
+之后重启就只要一句:
+
+```bash
+AGENT_AUTH_CODE=你的授权码 ./perch    # 其它都已经在 YAML 里
+```
+
+如果用 systemd / launchd / cron,把密钥放到 env 文件里(权限 0600),perch 会从 YAML 读其它配置:
+
+```ini
+# /etc/systemd/system/perch.service
+[Service]
+EnvironmentFile=/etc/perch/env
+ExecStart=/usr/local/bin/perch
+Restart=on-failure
+```
+
+```bash
+# /etc/perch/env (chmod 0600, chown root:root)
+AGENT_EMAIL=agent@163.com
+AGENT_AUTH_CODE=你的授权码
+```
+
+如果没设 `AGENT_AUTH_CODE` 就以非交互模式启动,perch 会输出提示并退出,告诉你该跑向导或写 env 文件。
 
 **小贴士:** 把授权码放在一个 gitignore 的文件里(仓库自带 `grant.code`),别每次输:
 

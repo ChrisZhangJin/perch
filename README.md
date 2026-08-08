@@ -92,8 +92,8 @@ from the YAML file.
 
 | Var / YAML key | Required | Default | Notes |
 |---|:---:|---|---|
-| `AGENT_EMAIL` | ✅ | — | the mailbox perch watches (env only — secret-ish) |
-| `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password (env only) |
+| `AGENT_EMAIL` | ✅ | — | the mailbox perch watches. Env wins; otherwise read from `email:` in YAML (written by setup wizard). |
+| `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password. Env-only — never written to disk. |
 | `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`, `s".*agent.*@qq\.com"`, `s"(?i).+@trusted\.org"`). Regexes are compiled at startup; a bad pattern fails the gate immediately (perch never starts in a fail-open state). `ALLOW_FROM` env var carries only literals. |
 | `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — endpoints derived |
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — binary derived |
@@ -130,6 +130,39 @@ ai_agent:
 ```bash
 AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch
 ```
+
+### First-run wizard vs unattended restart
+
+On the very first run, if stdin is a TTY and any required field is missing, perch
+runs an interactive wizard, writes non-secret fields (provider, agent, workdir,
+permission_mode, allow_from, email) to `~/.config/perch/perch.yaml` (mode 0600),
+and prompts for the auth code via `ReadPassword` (never echoed, never persisted).
+
+From then on, restarting is just:
+
+```bash
+AGENT_AUTH_CODE=xxxxxxxx ./perch    # everything else is in the YAML
+```
+
+For systemd / launchd / cron, put the secrets in an env file (mode 0600) and
+point the unit at it — perch will read the YAML for the rest:
+
+```ini
+# /etc/systemd/system/perch.service
+[Service]
+EnvironmentFile=/etc/perch/env
+ExecStart=/usr/local/bin/perch
+Restart=on-failure
+```
+
+```bash
+# /etc/perch/env (chmod 0600, chown root:root)
+AGENT_EMAIL=agent@163.com
+AGENT_AUTH_CODE=xxxxxxxx
+```
+
+Without `AGENT_AUTH_CODE` set, a non-interactive run exits with a hint pointing
+back at the wizard or the env file.
 
 **Tip:** keep the auth code in a gitignored file (the repo ships one called `grant.code`)
 rather than typing it on the command line:
