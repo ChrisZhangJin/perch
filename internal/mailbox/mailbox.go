@@ -25,15 +25,9 @@ type IMAPMailbox struct {
 	c   *imapclient.Client
 	cfg *config.Config
 
-	idleSupported bool
-
 	mu         sync.Mutex
 	onActivity func()
 }
-
-// IdleSupported reports whether the server advertised the IMAP IDLE capability.
-// Some providers (e.g. 163) do not, in which case perch runs in poll-only mode.
-func (m *IMAPMailbox) IdleSupported() bool { return m.idleSupported }
 
 // Dial connects with implicit TLS to imapAddr (resolved by the provider
 // registry in cmd/perch/main.go), sends the IMAP ID command (163 requires it),
@@ -69,16 +63,6 @@ func Dial(cfg *config.Config, imapAddr string) (*IMAPMailbox, error) {
 		c.Close()
 		return nil, err
 	}
-
-	// Detect IDLE support. 163 does not support IDLE and desyncs the connection
-	// if we send it, so we must know up front and stay in poll-only mode there.
-	caps := c.Caps()
-	if len(caps) == 0 {
-		if fetched, err := c.Capability().Wait(); err == nil {
-			caps = fetched
-		}
-	}
-	m.idleSupported = caps.Has(imap.CapIdle)
 
 	return m, nil
 }
@@ -137,18 +121,6 @@ func (m *IMAPMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 // WaitForActivity runs IDLE and returns when the server reports new mail, when
 // timeout elapses (safety poll), or when ctx is cancelled — whichever first.
 func (m *IMAPMailbox) WaitForActivity(ctx context.Context, timeout time.Duration) error {
-	// Poll-only mode (server has no IDLE, e.g. 163): just wait out the interval.
-	// Never send IDLE here — on 163 it errors and corrupts the connection.
-	if !m.idleSupported {
-		t := time.NewTimer(timeout)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-		case <-t.C:
-		}
-		return nil
-	}
-
 	got := make(chan struct{}, 1)
 	m.mu.Lock()
 	m.onActivity = func() {

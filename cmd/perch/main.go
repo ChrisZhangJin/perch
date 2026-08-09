@@ -78,11 +78,6 @@ func main() {
 		log.Error("gate build", "err", err)
 		os.Exit(1)
 	}
-	if mb.IdleSupported() {
-		log.Info("mailbox ready", "mode", "idle+poll")
-	} else {
-		log.Info("mailbox ready", "mode", "poll-only", "note", "server has no IMAP IDLE; using POLL_INTERVAL")
-	}
 	sess, err := session.Load(cfg.SessionStore)
 	if err != nil {
 		log.Error("session load", "err", err)
