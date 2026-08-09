@@ -1,6 +1,6 @@
 # perch.yaml.example — example configuration for perch.
 #
-# Copy this file to `perch.yaml` (or `~/.config/perch/perch.yaml`) and edit.
+# Copy this file to `perch.yaml` (or `~/.perch/perch.yaml`) and edit.
 # At startup perch loads the YAML file at this path, then layers env vars on
 # top, then falls back to built-in defaults. Precedence:
 #
@@ -11,7 +11,7 @@
 #
 # First-run wizard: if any required field is missing AND stdin is a TTY,
 # perch prompts for the missing fields interactively and writes the
-# non-secret values to ~/.config/perch/perch.yaml (0600).
+# non-secret values to ~/.perch/perch.yaml (0600).
 
 # --- Email provider --------------------------------------------------------
 # Built-in names. Each one bakes in the right IMAP/SMTP endpoints and the

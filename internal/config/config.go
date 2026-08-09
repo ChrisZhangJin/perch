@@ -3,7 +3,7 @@
 //
 //  1. Environment variables (e.g. AGENT_EMAIL, POLL_INTERVAL).
 //  2. A YAML file (path from --config / PERCH_CONFIG; default ./perch.yaml,
-//     then ~/.config/perch/perch.yaml).
+//     then ~/.perch/perch.yaml).
 //  3. Built-in defaults (see defaults()).
 //
 // Secrets (the 163 auth code) MUST be set via env and are never committed to
@@ -121,7 +121,7 @@ func defaults() *Config {
 func defaultConfigPaths() []string {
 	paths := []string{"./perch.yaml"}
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "perch", "perch.yaml"))
+		paths = append(paths, filepath.Join(home, ".perch", "perch.yaml"))
 	}
 	return paths
 }

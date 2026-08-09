@@ -119,7 +119,7 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 	}
 
 	// Persisted file should exist with 0600 mode.
-	cfgPath := filepath.Join(tmpHome, ".config", "perch", "perch.yaml")
+	cfgPath := filepath.Join(tmpHome, ".perch", "perch.yaml")
 	info, err := os.Stat(cfgPath)
 	if err != nil {
 		t.Fatalf("expected persisted config at %s: %v", cfgPath, err)

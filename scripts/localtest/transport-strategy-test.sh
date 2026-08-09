@@ -49,12 +49,12 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-# Pre-populate ~/.config/perch/perch.yaml with the provider we want to
+# Pre-populate ~/.perch/perch.yaml with the provider we want to
 # exercise. The wizard normally writes this, but a non-TTY invocation
 # can't prompt — so we drive it via env vars + an explicit YAML write.
 write_yaml_for() {
   local provider=$1
-  local cfgdir=$HOME/.config/perch
+  local cfgdir=$HOME/.perch
   mkdir -p "$cfgdir"
   cat > "$cfgdir/perch.yaml" <<EOF
 # written by scripts/localtest/transport-strategy-test.sh

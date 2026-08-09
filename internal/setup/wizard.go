@@ -29,7 +29,7 @@ type PasswordFn func(fd int) ([]byte, error)
 // populated, it returns nil silently. If stdin is non-interactive and fields
 // are missing, it writes a hint to stderr and returns ErrMissingFields.
 // Otherwise it runs the wizard, persists non-secret fields to
-// ~/.config/perch/perch.yaml with mode 0600, and updates cfg in place.
+// ~/.perch/perch.yaml with mode 0600, and updates cfg in place.
 func Ensure(cfg *config.Config, stdin io.Reader, stdout io.Writer, stderr io.Writer, pw PasswordFn) error {
 	missing := missingFields(cfg)
 	if len(missing) == 0 {
@@ -40,7 +40,7 @@ func Ensure(cfg *config.Config, stdin io.Reader, stdout io.Writer, stderr io.Wri
 		fmt.Fprintf(stderr, "missing required fields: %s\n", strings.Join(missing, ", "))
 		fmt.Fprintln(stderr, "hint: run interactively (./perch) or pre-fill via env vars:")
 		fmt.Fprintln(stderr, "  AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch")
-		fmt.Fprintln(stderr, "  or edit ~/.config/perch/perch.yaml")
+		fmt.Fprintln(stderr, "  or edit ~/.perch/perch.yaml")
 		return ErrMissingFields
 	}
 	return runWizard(cfg, stdin, stdout, pw)
@@ -96,7 +96,7 @@ func isInteractive(r io.Reader) bool {
 
 // runWizard prompts for each missing field in order, with bracketed defaults.
 // Plain inputs use Fscanln; the auth code uses the injected PasswordFn so
-// it does not echo. Non-secret fields are persisted to ~/.config/perch/perch.yaml.
+// it does not echo. Non-secret fields are persisted to ~/.perch/perch.yaml.
 func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) error {
 	fmt.Fprintln(out, "Welcome to perch.")
 	fmt.Fprintln(out, "Press Enter to accept the default shown in [brackets]; type to override.")
@@ -161,7 +161,7 @@ func splitAndTrim(s string) []string {
 	return out
 }
 
-// persist writes the non-secret fields of cfg to ~/.config/perch/perch.yaml
+// persist writes the non-secret fields of cfg to ~/.perch/perch.yaml
 // with mode 0600. AuthCode is NEVER written — only AGENT_AUTH_CODE env var.
 // Email IS written so unattended restarts don't have to re-enter it.
 func persist(cfg *config.Config) error {
@@ -169,7 +169,7 @@ func persist(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(home, ".config", "perch")
+	dir := filepath.Join(home, ".perch")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

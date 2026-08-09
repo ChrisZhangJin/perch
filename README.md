@@ -89,7 +89,7 @@ perch loads its settings from three layers, in this order of precedence
 
 1. **Environment variables** — same names as before (`AGENT_EMAIL`, `POLL_INTERVAL`, …).
 2. **YAML file** — `perch.yaml` in the working directory, or
-   `~/.config/perch/perch.yaml`. Override with `--config <path>` /
+   `~/.perch/perch.yaml`. Override with `--config <path>` /
    `PERCH_CONFIG=<path>`. A starter file lives at the repo root.
 3. **Built-in defaults** — sensible values for 163; override via YAML or env.
 
@@ -141,7 +141,7 @@ AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=xxxxxxxx ./perch
 
 On the very first run, if stdin is a TTY and any required field is missing, perch
 runs an interactive wizard, writes non-secret fields (provider, agent, workdir,
-permission_mode, allow_from, email) to `~/.config/perch/perch.yaml` (mode 0600),
+permission_mode, allow_from, email) to `~/.perch/perch.yaml` (mode 0600),
 and prompts for the auth code via `ReadPassword` (never echoed, never persisted).
 
 From then on, restarting is just:

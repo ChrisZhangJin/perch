@@ -32,7 +32,7 @@ func realReadPassword(fd int) ([]byte, error) {
 }
 
 func main() {
-	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.config/perch/perch.yaml). Env: PERCH_CONFIG.")
+	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))

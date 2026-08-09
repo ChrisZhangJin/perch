@@ -84,7 +84,7 @@ UPX 安装:`apt-get install upx-ucl`。
 perch 从三层加载配置,优先级由高到低:
 
 1. **环境变量** — 名字与之前一致(`AGENT_EMAIL`、`POLL_INTERVAL` 等)。
-2. **YAML 文件** — 先找当前目录的 `perch.yaml`,再找 `~/.config/perch/perch.yaml`。
+2. **YAML 文件** — 先找当前目录的 `perch.yaml`,再找 `~/.perch/perch.yaml`。
    也可以用 `--config <path>` 或 `PERCH_CONFIG=<path>` 指定路径。仓库根目录里有一份样板。
 3. **内置默认值** — 163 的合理默认;可以用 YAML 或环境变量覆盖。
 
@@ -133,7 +133,7 @@ AGENT_EMAIL=agent@163.com AGENT_AUTH_CODE=你的授权码 ./perch
 
 ### 首次运行向导 vs 无人值守重启
 
-首次运行时,如果 stdin 是 TTY 且必填字段缺失,perch 会启动交互式向导,把非机密字段(邮箱服务商、AI agent、workdir、permission_mode、allow_from、邮箱)写到 `~/.config/perch/perch.yaml`(权限 0600),并通过 `ReadPassword` 提示输入授权码(不回显、不落盘)。
+首次运行时,如果 stdin 是 TTY 且必填字段缺失,perch 会启动交互式向导,把非机密字段(邮箱服务商、AI agent、workdir、permission_mode、allow_from、邮箱)写到 `~/.perch/perch.yaml`(权限 0600),并通过 `ReadPassword` 提示输入授权码(不回显、不落盘)。
 
 之后重启就只要一句:
 
