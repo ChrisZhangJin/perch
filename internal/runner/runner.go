@@ -107,14 +107,30 @@ func readSessionHeaderID(path string) string {
 // BuildPrompt frames an email as a task prompt for the agent, listing any
 // inbound attachments already saved to disk and the outbound reply/ staging
 // directory the agent should write files into.
+//
+// The framing is deliberate: this is an EMAIL reply, not a CLI session.
+// The agent's stdout becomes the email body verbatim, so the model must
+// (a) skip the internal-monologue preamble that CLI agents default to
+// ("Let me first check..."), (b) not narrate tool calls, and (c) keep the
+// final answer short and direct. Files the agent writes into replyDir are
+// attached to the reply automatically; the body should be a one-line
+// caption, not a transcript of the work.
 func BuildPrompt(from, subject, body string, attachments []string, replyDir string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You received a task via email and must act on it, then produce a reply that will be emailed back to the sender.\n\nFrom: %s\nSubject: %s\n\n%s", from, subject, body)
+	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q). Your entire stdout will be sent back to them as the body of the reply email — there is no follow-up turn to read intermediate output.\n\n", from, subject)
+	b.WriteString("Reply rules:\n")
+	b.WriteString("- Be concise. Lead with the answer or result, not a plan.\n")
+	b.WriteString("- Do NOT narrate tool calls. Do NOT write phrases like \"Let me check...\", \"I see that...\", \"First I'll...\". The user does not see your reasoning; they only see your final text.\n")
+	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
+	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
+	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n\n")
+	b.WriteString("Task:\n")
+	b.WriteString(body)
 	if len(attachments) > 0 {
-		fmt.Fprintf(&b, "\n\nThis email has %d attachment(s). They were saved under:\n%s\nRead them with your file tools if the task requires it.", len(attachments), strings.Join(attachments, "\n"))
+		fmt.Fprintf(&b, "\n\nAttachments (%d) saved on disk under:\n%s\nRead them with your file tools if the task requires it.", len(attachments), strings.Join(attachments, "\n"))
 	}
 	if replyDir != "" {
-		fmt.Fprintf(&b, "\n\nTo send files back to the sender, write them into %s — they will be attached to your reply email automatically.", replyDir)
+		fmt.Fprintf(&b, "\n\nTo return files to the sender, write them into %s — they will be attached to your reply email automatically. Do not echo file contents in the body.", replyDir)
 	}
 	return b.String()
 }
@@ -202,5 +218,104 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 			r.log.Debug("adopt nanopi session id", "perch_uuid", sessionID, "nanopi_uuid", nativeID)
 		}
 	}
-	return reply, nativeID, nil
+	return cleanAgentOutput(reply, r.ag.Name), nativeID, nil
+}
+
+// cleanAgentOutput strips agent-side rendering noise from captured stdout
+// so the value returned to the email is the assistant's actual reply, not
+// a transcript of the run. nanopi's StdoutRenderer streams the reply with
+// ANSI color codes and bracket-style tool-call / tool-result markers
+// directly to stdout; the clean text is also buffered internally and
+// returned via finalize(), but we don't have access to that from outside
+// the process — so we reconstruct it by:
+//
+//   1. Dropping every line that matches nanopi's per-event markers
+//      (`[tool_call: ...]`, `[bash → ... Took ...]`, etc.). These are
+//      control lines, never part of the reply.
+//   2. Stripping any remaining ANSI escape sequences (color codes).
+//   3. Trimming surrounding whitespace.
+//
+// Other agents (claude, pi) print plain text and pass through unchanged.
+func cleanAgentOutput(s, agentName string) string {
+	if agentName != "nanopi" {
+		return strings.TrimSpace(s)
+	}
+	var out strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		stripped := stripANSI(line)
+		t := strings.TrimSpace(stripped)
+		if t == "" {
+			out.WriteByte('\n')
+			continue
+		}
+		// Drop nanopi's control-line markers. These are written by
+		// StdoutRenderer for tool_call, tool_result, error, compaction.
+		if isNanopiControlLine(t) {
+			continue
+		}
+		out.WriteString(stripped)
+		out.WriteByte('\n')
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// isNanopiControlLine reports whether a line is one of nanopi's
+// per-event rendering markers (after ANSI strip). Matches the formats
+// in nanopi/src/render/stdout.rs:
+//   [tool_call: <name> <id>]
+//   [<name> → <n> bytes  Took <time>]
+//   [<name> ✗ <n> bytes  Took <time>]
+//   [error: <msg>]
+//   [compacting context (<reason>)…]
+//   [compacted <n> messages via <kind>]
+func isNanopiControlLine(line string) bool {
+	switch {
+	case strings.HasPrefix(line, "[tool_call:"):
+		return true
+	case strings.HasPrefix(line, "[error:"):
+		return true
+	case strings.HasPrefix(line, "[compacting context"):
+		return true
+	case strings.HasPrefix(line, "[compacted "):
+		return true
+	}
+	// tool_result lines: [<name> → N bytes  Took ...] or [<name> ✗ N bytes  Took ...]
+	if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+		inner := line[1 : len(line)-1]
+		// Has "→" or "✗" between first word and "bytes"
+		if strings.Contains(inner, " bytes") {
+			return true
+		}
+	}
+	return false
+}
+
+// stripANSI removes CSI escape sequences: ESC [ ... <final byte 0x40-0x7e>.
+// Covers the colors and styles nanopi uses (SGR codes like \x1b[1;32m).
+func stripANSI(s string) string {
+	if !strings.ContainsRune(s, 0x1b) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until we hit a final byte (0x40-0x7e).
+			j := i + 2
+			for j < len(s) {
+				c := s[j]
+				if c >= 0x40 && c <= 0x7e {
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
