@@ -52,6 +52,29 @@ func (r *Registry) Resolve(threadRoot string) (string, bool, error) {
 	return id, true, nil
 }
 
+// Replace overwrites the session UUID for an existing thread root and
+// persists. Used when an agent auto-generates its own session id (e.g.
+// nanopi on IsNew=true) and perch must adopt that id for subsequent
+// resumes. threadRoot must already exist in the registry — this is not
+// a fresh-insert path. A no-op + nil error when newID equals the current
+// value (so callers don't have to special-case "already up to date").
+func (r *Registry) Replace(threadRoot, newID string) error {
+	if newID == "" {
+		return fmt.Errorf("session: empty new id for thread %q", threadRoot)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.m[threadRoot]
+	if !ok {
+		return fmt.Errorf("session: unknown thread root %q", threadRoot)
+	}
+	if cur == newID {
+		return nil
+	}
+	r.m[threadRoot] = newID
+	return r.save()
+}
+
 func (r *Registry) save() error {
 	data, err := json.MarshalIndent(r.m, "", "  ")
 	if err != nil {

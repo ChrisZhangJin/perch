@@ -36,7 +36,7 @@ func TestAgentBuildArgs_ClaudeResume(t *testing.T) {
 func TestAgentBuildArgs_NanopiAcceptEdits(t *testing.T) {
 	a, _ := Lookup("nanopi")
 	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w", PermMode: "acceptEdits"})
-	want := []string{"-p", "p", "--output", "text", "--session", "sid", "--approve"}
+	want := []string{"-p", "p", "--output", "text", "--approve"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nanopi acceptEdits = %v, want %v", got, want)
 	}
@@ -45,18 +45,31 @@ func TestAgentBuildArgs_NanopiAcceptEdits(t *testing.T) {
 func TestAgentBuildArgs_NanopiBypassPermissions(t *testing.T) {
 	a, _ := Lookup("nanopi")
 	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w", PermMode: "bypassPermissions"})
-	want := []string{"-p", "p", "--output", "text", "--session", "sid", "--approve"}
+	want := []string{"-p", "p", "--output", "text", "--approve"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("nanopi bypassPermissions = %v, want %v", got, want)
 	}
 }
 
-func TestAgentBuildArgs_NanopiNoPermMode(t *testing.T) {
+func TestAgentBuildArgs_NanopiResume(t *testing.T) {
 	a, _ := Lookup("nanopi")
 	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: false, Workdir: "/w"})
 	want := []string{"-p", "p", "--output", "text", "--session", "sid"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("nanopi no-permmode = %v, want %v", got, want)
+		t.Errorf("nanopi resume = %v, want %v", got, want)
+	}
+}
+
+func TestAgentBuildArgs_NanopiNewOmitsSession(t *testing.T) {
+	// Regression: passing --session <new-uuid> to nanopi fails with
+	// "first line must be a session header" because the flag is resume-only.
+	// On IsNew=true we must omit the flag and let nanopi create the file.
+	a, _ := Lookup("nanopi")
+	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w", PermMode: "acceptEdits"})
+	for _, a := range got {
+		if a == "--session" {
+			t.Errorf("nanopi IsNew=true must not pass --session, got argv: %v", got)
+		}
 	}
 }
 

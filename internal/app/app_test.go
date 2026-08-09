@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,11 +37,14 @@ func (f *fakeMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 }
 func (f *fakeMailbox) Close() error { return nil }
 
-type fakeRunner struct{ called bool }
+type fakeRunner struct {
+	called bool
+	native string // returned as nativeID
+}
 
-func (r *fakeRunner) Run(ctx context.Context, prompt, sid string, isNew bool) (string, error) {
+func (r *fakeRunner) Run(ctx context.Context, prompt, sid string, isNew bool) (string, string, error) {
 	r.called = true
-	return "the answer", nil
+	return "the answer", r.native, nil
 }
 
 type fakeSender struct {
@@ -132,4 +136,42 @@ func TestProcessDedupSkipsSecondTime(t *testing.T) {
 	if run.called {
 		t.Error("duplicate message id should be skipped")
 	}
+}
+
+// TestProcessAdoptsNativeSessionID covers the nanopi IsNew=true path:
+// the runner returns a different (agent-native) session id, and the app
+// must persist it to the registry so the next email in the same thread
+// resumes correctly. Regression for the "first line must be a session
+// header" failure that happened when perch passed its perch-invented UUID
+// to --session on a brand-new thread.
+func TestProcessAdoptsNativeSessionID(t *testing.T) {
+	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 7, Data: []byte(wlEML)}}}
+	native := "019fd2a7-812a-73c0-9052-c07bee77dabf"
+	run := &fakeRunner{native: native}
+	rep := &fakeSender{}
+	app := newTestApp(t, mb, run, rep)
+
+	if err := app.ProcessUnseen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Pull the registry back out of the app — newTestApp owns it, but
+	// app.sess is exported via the App struct's sess field. We rely on
+	// the registry's persistence to verify the swap.
+	r := app.sess
+	got, _, _ := r.Resolve(messageThreadRootOf(wlEML))
+	if got != native {
+		t.Errorf("registry id = %q, want adopted %q", got, native)
+	}
+}
+
+// messageThreadRootOf mirrors the parser's MessageID keying. message.Message
+// retains the <...> brackets on m.MessageID (no strip), so the registry key
+// matches what's in the email header verbatim.
+func messageThreadRootOf(eml string) string {
+	for _, line := range strings.Split(eml, "\n") {
+		if strings.HasPrefix(strings.ToLower(line), "message-id:") {
+			return strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
+		}
+	}
+	return ""
 }

@@ -28,7 +28,11 @@ type Mailbox interface {
 }
 
 type TaskRunner interface {
-	Run(ctx context.Context, prompt, sessionID string, isNew bool) (string, error)
+	// Run returns (reply, nativeID, err). nativeID is non-empty only when
+	// the agent minted its own session id (e.g. nanopi on IsNew=true with
+	// --session omitted) and the caller should adopt that id for future
+	// resumes; empty means "keep your current perch-invented UUID".
+	Run(ctx context.Context, prompt, sessionID string, isNew bool) (string, string, error)
 }
 
 // ReplySender mails the agent's answer back. attachments lists files staged
@@ -118,13 +122,25 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		}
 
 		prompt := runner.BuildPrompt(m.From, m.Subject, m.Body, saved, rpDir)
-		out, err := a.run.Run(ctx, prompt, sid, isNew)
+		out, nativeID, err := a.run.Run(ctx, prompt, sid, isNew)
 		if err != nil {
 			a.log.Error("agent run failed", "from", m.From, "err", err)
 			_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
 				"Sorry, the task failed to complete: "+err.Error(), nil)
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
+		}
+		// Adopt the agent's native session id when the runner hands one back.
+		// Today this only happens for nanopi on IsNew=true (where we omitted
+		// --session and let nanopi mint its own UUIDv7); future agents that
+		// pick their own id will plug in the same way.
+		if nativeID != "" && nativeID != sid {
+			if err := a.sess.Replace(m.ThreadRoot(), nativeID); err != nil {
+				a.log.Warn("session replace failed", "from", m.From, "err", err)
+			} else {
+				a.log.Debug("adopted native session id",
+					"from", m.From, "old", sid, "new", nativeID)
+			}
 		}
 		files, err := collectReplyFiles(rpDir)
 		if err != nil {

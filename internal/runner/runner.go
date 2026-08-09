@@ -1,11 +1,15 @@
 package runner
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +40,70 @@ func New(ag *agent.Agent, workdir, permMode string, taskTimeout time.Duration, l
 	return &Runner{ag: ag, workdir: workdir, permMode: permMode, taskTimeout: taskTimeout, log: log}
 }
 
+// discoverNanopiSessionID reads ~/.nanopi/sessions/active (or $NANOPI_HOME/sessions/active),
+// finds the line for our workdir, reads the referenced session file, and
+// returns the UUID written in its header line.
+func discoverNanopiSessionID(workdir string) string {
+	dir := nanopiSessionsDir()
+	if dir == "" {
+		return ""
+	}
+	active := filepath.Join(dir, "active")
+	data, err := os.ReadFile(active)
+	if err != nil {
+		return ""
+	}
+	wanted := workdir
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "\t")
+		if !ok || k != wanted {
+			continue
+		}
+		return readSessionHeaderID(v)
+	}
+	return ""
+}
+
+// nanopiSessionsDir mirrors nanopi's sessions_dir() helper: NANOPI_HOME env
+// var if set, else $HOME/.nanopi/sessions.
+func nanopiSessionsDir() string {
+	if p := os.Getenv("NANOPI_HOME"); p != "" {
+		return filepath.Join(p, "sessions")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".nanopi", "sessions")
+}
+
+// readSessionHeaderID parses the first non-empty JSONL line of the session
+// file at path and returns the "id" field. nanopi's session header has
+// shape {"type":"session","version":2,"id":"<uuid>",...} — we only need id.
+func readSessionHeaderID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var hdr struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &hdr); err != nil {
+			return ""
+		}
+		return hdr.ID
+	}
+	return ""
+}
+
 // BuildPrompt frames an email as a task prompt for the agent, listing any
 // inbound attachments already saved to disk and the outbound reply/ staging
 // directory the agent should write files into.
@@ -55,7 +123,13 @@ func BuildPrompt(from, subject, body string, attachments []string, replyDir stri
 // agent's BuildArgs adapter; a brand-new session uses --session-id and a
 // continuing session uses --resume (for adapters that distinguish them).
 // On ctx timeout the process gets SIGTERM, then SIGKILL after a 5s grace.
-func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) (string, error) {
+//
+// Returns (reply, nativeID, err). nativeID is the agent's actual session
+// id for this run when discoverable (nanopi on IsNew=true, where perch
+// invented the UUID but nanopi minted its own). For all other agents and
+// paths nativeID is "" — callers should keep their perch-invented UUID
+// in that case.
+func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) (string, string, error) {
 	args := r.ag.BuildArgs(agent.Args{
 		Prompt:    prompt,
 		SessionID: sessionID,
@@ -108,7 +182,7 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 			"stdout_bytes", stdout.Len(),
 			"stderr", strings.TrimSpace(stderr.String()),
 		)
-		return "", fmt.Errorf("%s failed: %w; stderr: %s", r.ag.Name, err, strings.TrimSpace(stderr.String()))
+		return "", "", fmt.Errorf("%s failed: %w; stderr: %s", r.ag.Name, err, strings.TrimSpace(stderr.String()))
 	}
 	r.log.Debug("agent exit",
 		"agent", r.ag.Name,
@@ -116,5 +190,17 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 		"duration", dur,
 		"stdout_bytes", stdout.Len(),
 	)
-	return strings.TrimSpace(stdout.String()), nil
+	reply := strings.TrimSpace(stdout.String())
+
+	// Discover the agent's native session id (only nanopi, only after a
+	// successful IsNew=true run where we omitted --session). Returns ""
+	// otherwise — callers treat empty as "no update needed".
+	var nativeID string
+	if isNew && r.ag.Name == "nanopi" {
+		nativeID = discoverNanopiSessionID(r.workdir)
+		if nativeID != "" {
+			r.log.Debug("adopt nanopi session id", "perch_uuid", sessionID, "nanopi_uuid", nativeID)
+		}
+	}
+	return reply, nativeID, nil
 }

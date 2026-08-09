@@ -12,13 +12,21 @@ func buildClaudeArgs(a Args) []string {
 	return out
 }
 
-// buildNanopiArgs uses --session <sid> for both new and resume; IsNew is
-// ignored. PermMode maps to nanopi's --approve so perch doesn't hang on
-// the project-trust prompt: acceptEdits/bypassPermissions → --approve,
-// any other value (or empty) → no flag (nanopi prompts or uses persisted
-// trust).
+// buildNanopiArgs omits --session on first touch and uses --session <sid>
+// on resume. nanopi's --session flag is RESUME-ONLY — passing a non-existent
+// id yields "first line must be a session header" (the file isn't there
+// yet). On IsNew=true we let nanopi mint its own UUIDv7; after the run
+// completes, runner.DiscoverSessionID() reads ~/.nanopi/sessions/active to
+// recover the new id, which app.ProcessUnseen writes back into the perch
+// registry so subsequent emails in the same thread resume correctly.
+// PermMode maps to nanopi's --approve so perch doesn't hang on the
+// project-trust prompt: acceptEdits/bypassPermissions → --approve; any
+// other value (or empty) → no flag (nanopi prompts or uses persisted trust).
 func buildNanopiArgs(a Args) []string {
-	args := []string{"-p", a.Prompt, "--output", "text", "--session", a.SessionID}
+	args := []string{"-p", a.Prompt, "--output", "text"}
+	if !a.IsNew {
+		args = append(args, "--session", a.SessionID)
+	}
 	switch a.PermMode {
 	case "acceptEdits", "bypassPermissions":
 		args = append(args, "--approve")
