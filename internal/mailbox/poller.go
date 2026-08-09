@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -30,22 +31,27 @@ func NewPoller(cfg *config.Config, addr string) *Poller {
 // the underlying imapclient library (DialTLS, ID, Login, Select) does not
 // honour ctx, so cancellation only takes effect on the next call boundary.
 func (p *Poller) dial(ctx context.Context) (*imapclient.Client, error) {
+	slog.Debug("imap dial (poller)", "addr", p.addr, "user", p.cfg.Email)
 	c, err := imapclient.DialTLS(p.addr, &imapclient.Options{
 		TLSConfig: p.tlsConfig(),
 	})
 	if err != nil {
+		slog.Debug("imap dial (poller) failed", "addr", p.addr, "err", err)
 		return nil, err
 	}
 	// IMAP ID before login (163 requires it; harmless elsewhere).
 	_, _ = c.ID(&imap.IDData{Name: "perch", Version: "0.1"}).Wait()
 	if err := c.Login(p.cfg.Email, p.cfg.AuthCode).Wait(); err != nil {
+		slog.Debug("imap login (poller) failed", "user", p.cfg.Email, "err", err)
 		_ = c.Close()
 		return nil, fmt.Errorf("login: %w", err)
 	}
 	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		slog.Debug("imap select INBOX (poller) failed", "err", err)
 		_ = c.Close()
 		return nil, fmt.Errorf("select: %w", err)
 	}
+	slog.Debug("imap ready (poller)")
 	return c, nil
 }
 
@@ -74,6 +80,7 @@ func (p *Poller) FetchUnseen(ctx context.Context) ([]Raw, error) {
 		return nil, err
 	}
 	uids := data.AllUIDs()
+	slog.Debug("imap search unseen (poller)", "count", len(uids))
 	if len(uids) == 0 {
 		return nil, nil
 	}
@@ -100,11 +107,15 @@ func (p *Poller) MarkSeen(ctx context.Context, uid uint32) error {
 		return err
 	}
 	defer p.shutdown(c)
-	return c.Store(imap.UIDSetNum(imap.UID(uid)), &imap.StoreFlags{
+	if err := c.Store(imap.UIDSetNum(imap.UID(uid)), &imap.StoreFlags{
 		Op:     imap.StoreFlagsAdd,
 		Silent: true,
 		Flags:  []imap.Flag{imap.FlagSeen},
-	}, nil).Close()
+	}, nil).Close(); err != nil {
+		return err
+	}
+	slog.Debug("imap mark seen (poller)", "uid", uid)
+	return nil
 }
 
 // Close is intentionally a no-op: Poller holds no persistent connection

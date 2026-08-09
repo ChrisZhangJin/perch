@@ -3,6 +3,7 @@ package mailbox
 import (
 	"context"
 	"crypto/tls"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -44,8 +45,10 @@ func Dial(cfg *config.Config, imapAddr string) (*IMAPMailbox, error) {
 			},
 		},
 	}
+	slog.Debug("imap dial", "addr", imapAddr, "tls_insecure", cfg.TLSInsecure)
 	c, err := imapclient.DialTLS(imapAddr, opts)
 	if err != nil {
+		slog.Debug("imap dial failed", "addr", imapAddr, "err", err)
 		return nil, err
 	}
 	m.c = c
@@ -53,16 +56,21 @@ func Dial(cfg *config.Config, imapAddr string) (*IMAPMailbox, error) {
 	// 163 rejects sessions ("Unsafe Login") unless the client sends ID first.
 	if _, err := c.ID(&imap.IDData{Name: "perch", Version: "0.1"}).Wait(); err != nil {
 		// Non-fatal: some servers do not require/allow ID. Continue to login.
+		slog.Debug("imap ID rejected", "err", err)
 		_ = err
 	}
+	slog.Debug("imap login", "user", cfg.Email)
 	if err := c.Login(cfg.Email, cfg.AuthCode).Wait(); err != nil {
+		slog.Debug("imap login failed", "user", cfg.Email, "err", err)
 		c.Close()
 		return nil, err
 	}
 	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		slog.Debug("imap select INBOX failed", "err", err)
 		c.Close()
 		return nil, err
 	}
+	slog.Debug("imap ready", "mailbox", "INBOX")
 
 	return m, nil
 }
@@ -85,6 +93,7 @@ func (m *IMAPMailbox) FetchUnseen(ctx context.Context) ([]Raw, error) {
 		return nil, err
 	}
 	uids := data.AllUIDs()
+	slog.Debug("imap search unseen", "count", len(uids))
 	if len(uids) == 0 {
 		return nil, nil
 	}
@@ -115,7 +124,11 @@ func (m *IMAPMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 		Silent: true,
 		Flags:  []imap.Flag{imap.FlagSeen},
 	}
-	return m.c.Store(set, store, nil).Close()
+	if err := m.c.Store(set, store, nil).Close(); err != nil {
+		return err
+	}
+	slog.Debug("imap mark seen", "uid", uid)
+	return nil
 }
 
 // WaitForActivity runs IDLE and returns when the server reports new mail, when

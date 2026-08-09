@@ -102,7 +102,7 @@ func main() {
 		os.Exit(1)
 	}
 	a := app.New(cfg, strat.Box, g, sess,
-		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout),
+		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log),
 		replier.New(cfg, p.SMTPAddr),
 		log,
 		strat.Triggers...,

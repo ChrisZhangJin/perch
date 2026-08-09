@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +51,7 @@ func runnerFromStub(t *testing.T, bin string) *Runner {
 		t.Fatal(err)
 	}
 	ag.Binary = bin // override the registry default for testing
-	return New(&ag, t.TempDir(), "acceptEdits", 5*time.Second)
+	return New(&ag, t.TempDir(), "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRunNewSessionPassesSessionID(t *testing.T) {

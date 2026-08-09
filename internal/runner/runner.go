@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -20,13 +21,19 @@ type Runner struct {
 	workdir     string
 	permMode    string
 	taskTimeout time.Duration
+	log         *slog.Logger
 }
 
 // New wires a Runner around an already-resolved agent. workdir becomes cmd.Dir
 // for every spawned process; permMode is forwarded to the agent's argv
-// adapter (claude only).
-func New(ag *agent.Agent, workdir, permMode string, taskTimeout time.Duration) *Runner {
-	return &Runner{ag: ag, workdir: workdir, permMode: permMode, taskTimeout: taskTimeout}
+// adapter (claude only). log is used to DEBUG-log every spawned command
+// (binary + argv + workdir) and exit status, so an operator with log_level=debug
+// can reproduce what perch sent.
+func New(ag *agent.Agent, workdir, permMode string, taskTimeout time.Duration, log *slog.Logger) *Runner {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Runner{ag: ag, workdir: workdir, permMode: permMode, taskTimeout: taskTimeout, log: log}
 }
 
 // BuildPrompt frames an email as a task prompt for the agent, listing any
@@ -65,12 +72,49 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 5 * time.Second
 
+	// Log the exact command we're about to spawn. Prompt length instead of
+	// contents — prompts are user email bodies and can be long; the argv
+	// has the metadata an operator actually needs to reproduce.
+	r.log.Debug("spawn agent",
+		"agent", r.ag.Name,
+		"binary", r.ag.Binary,
+		"argv", args,
+		"workdir", r.workdir,
+		"is_new", isNew,
+		"prompt_bytes", len(prompt),
+	)
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	start := time.Now()
+	err := cmd.Run()
+	dur := time.Since(start)
+
+	// Exit info — useful when an agent hangs or returns garbage. We log the
+	// raw error and stderr snippet at DEBUG; at INFO we only emit on failure
+	// (the WARN in the caller picks that up).
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	if err != nil {
+		r.log.Debug("agent exit",
+			"agent", r.ag.Name,
+			"err", err,
+			"exit_code", exitCode,
+			"duration", dur,
+			"stdout_bytes", stdout.Len(),
+			"stderr", strings.TrimSpace(stderr.String()),
+		)
 		return "", fmt.Errorf("%s failed: %w; stderr: %s", r.ag.Name, err, strings.TrimSpace(stderr.String()))
 	}
+	r.log.Debug("agent exit",
+		"agent", r.ag.Name,
+		"exit_code", exitCode,
+		"duration", dur,
+		"stdout_bytes", stdout.Len(),
+	)
 	return strings.TrimSpace(stdout.String()), nil
 }
