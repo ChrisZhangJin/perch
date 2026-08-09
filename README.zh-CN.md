@@ -40,13 +40,19 @@ agent(默认 Claude Code,任何 CLI 都行)处理,并在同一邮件线程内回
 
 ## 🗺️ 工作原理
 
-单条 IMAP 连接,交替循环:
+启动时 perch 根据 `internal/provider/registry.go` 里每个供应商的 `Capabilities` 字段
+挑一条传输策略:
+
+| 供应商 | `SupportsIDLE` | 策略 | 行为 |
+|---|---|---|---|
+| 163、126 | `false` | **P** — Poller(短连接) | 每次 `FetchUnseen` / `MarkSeen` 都是一次全新的 IMAP 连接:Dial → 操作 → Logout → Close。服务器宕机或重启只会让下一次 dial 失败,**不会留下永远死掉的连接**。 |
+| qq(以及未来任何声明支持 IDLE 的供应商) | `true` | **L** — IMAPMailbox(长连接 + IDLE) | 一条连接复用,`FetchUnseen` 和 `IDLE` 交替循环(IDLE 以 `POLL_INTERVAL` 为兜底超时)。新邮件 1-3 秒内到达,而不是等下一个轮询 tick。 |
+
+将来 `S` 模式(server-push webhook,如 Gmail Pub/Sub)是 `BuildStrategy` 里加一行的事——等真有需要再做。
 
 ```text
-ProcessUnseen(拉取并处理所有未读邮件)
-   → IDLE,最多等待 POLL_INTERVAL
-       (来新邮件立刻返回 = 近实时;否则超时,当作兜底轮询)
-   → 重复
+P 模式: for { sleep(POLL_INTERVAL); fetch(Dial→UIDSearch→Fetch→Logout→Close); mark seen }
+L 模式: for { fetch; IDLE 最长到 POLL_INTERVAL(有 EXISTS 立刻返回); }   // 共享连接
 ```
 
 每封邮件:`解析 → 去重(\Seen + 内存集合) → 白名单 → 把邮件线程映射到稳定的 agent 会话

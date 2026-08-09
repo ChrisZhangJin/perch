@@ -42,13 +42,19 @@ gate** that listens, authorizes, spawns the agent as a worker, and mails the res
 
 ## 🗺️ How it works
 
-One IMAP connection, alternating:
+Perch picks one of two transport strategies at startup, driven by the
+provider's `Capabilities` in `internal/provider/registry.go`:
+
+| Provider | `SupportsIDLE` | Strategy | Behaviour |
+|---|---|---|---|
+| 163, 126 | `false` | **P** — Poller (short-conn) | Every `FetchUnseen` / `MarkSeen` is a fresh IMAP dial → op → logout → close. A dead or restarted server simply means the next dial fails — no stuck connection. |
+| qq (and any future provider that advertises IDLE) | `true` | **L** — IMAPMailbox (long-conn + IDLE) | One connection, alternating `FetchUnseen` and `IDLE` (capped by `POLL_INTERVAL` as a safety poll). New mail arrives in 1-3 seconds instead of waiting for the next poll tick. |
+
+Future `S` mode (server-push webhook, e.g. Gmail Pub/Sub) is a one-line addition to `BuildStrategy` once a provider needs it.
 
 ```text
-ProcessUnseen (fetch + handle every unseen message)
-   → IDLE, waiting up to POLL_INTERVAL
-       (returns early on new mail = near-real-time; else acts as a safety poll)
-   → repeat
+P mode:  for { sleep(POLL_INTERVAL); fetch(dial→UIDSearch→Fetch→Logout→Close); mark seen }
+L mode:  for { fetch; IDLE up to POLL_INTERVAL (early-exit on EXISTS); }   // shared connection
 ```
 
 Per message: `parse → dedup (\Seen + in-memory set) → whitelist → map thread to a stable
