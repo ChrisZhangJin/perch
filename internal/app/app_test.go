@@ -10,6 +10,7 @@ import (
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/gate"
+	plog "github.com/ChrisZhangJin/perch/internal/log"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/session"
 )
@@ -72,7 +73,7 @@ func newTestApp(t *testing.T, mb Mailbox, run TaskRunner, rep ReplySender) *App 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, mb, g, sess, run, rep, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	return New(cfg, mb, g, sess, run, rep, slog.New(plog.New(os.Stderr, slog.LevelInfo)))
 }
 
 func TestProcessWhitelistedGetsReply(t *testing.T) {

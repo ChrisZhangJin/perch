@@ -14,6 +14,7 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/gate"
+	plog "github.com/ChrisZhangJin/perch/internal/log"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/provider"
 	"github.com/ChrisZhangJin/perch/internal/replier"
@@ -35,7 +36,8 @@ func main() {
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
 	flag.Parse()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := slog.New(plog.New(os.Stderr, slog.LevelInfo))
+	slog.SetDefault(log)
 	log.Info("perch starting", "version", version)
 
 	cfg, err := config.Load(*configPath)

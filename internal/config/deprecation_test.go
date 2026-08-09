@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	plog "github.com/ChrisZhangJin/perch/internal/log"
 )
 
 func TestApplyYAMLWarnsOnDeprecatedKeys(t *testing.T) {
@@ -32,7 +34,7 @@ ai_agent:
 
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	slog.SetDefault(slog.New(plog.New(&buf, slog.LevelInfo)))
 	defer slog.SetDefault(prev)
 
 	cfg, err := Load(path)
@@ -72,7 +74,7 @@ ai_agent:
 
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	slog.SetDefault(slog.New(plog.New(&buf, slog.LevelInfo)))
 	defer slog.SetDefault(prev)
 
 	if _, err := Load(path); err != nil {
