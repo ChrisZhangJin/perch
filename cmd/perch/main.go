@@ -36,15 +36,22 @@ func main() {
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
 	flag.Parse()
 
-	log := slog.New(plog.New(os.Stderr, slog.LevelInfo))
-	slog.SetDefault(log)
-	log.Info("perch starting", "version", version)
-
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Error("config", "err", err)
+		// Logger not built yet — fall back to a default-format handler so
+		// the failure message is still readable.
+		fallback := slog.New(plog.New(os.Stderr, slog.LevelInfo))
+		slog.SetDefault(fallback)
+		fallback.Error("config", "err", err)
 		os.Exit(1)
 	}
+	level, lvlErr := config.ParseLogLevel(cfg.LogLevel)
+	log := slog.New(plog.New(os.Stderr, level))
+	slog.SetDefault(log)
+	if lvlErr != nil {
+		log.Warn("log level", "err", lvlErr)
+	}
+	log.Info("perch starting", "version", version, "log_level", level.String())
 	if used := config.ResolveConfigPath(*configPath); used != "" {
 		log.Info("config loaded", "path", used)
 	} else {

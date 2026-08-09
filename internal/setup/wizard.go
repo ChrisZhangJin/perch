@@ -71,6 +71,9 @@ func missingFields(cfg *config.Config) []string {
 	if cfg.AgentPermMode == "" {
 		m = append(m, "agent.permission_mode")
 	}
+	if cfg.LogLevel == "" {
+		m = append(m, "log_level")
+	}
 	return m
 }
 
@@ -107,6 +110,7 @@ func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) e
 	cfg.AgentName = prompt(in, out, "AI agent", cfg.AgentName, "claude / nanopi / pi")
 	cfg.AgentWorkdir = prompt(in, out, "Agent workdir", cfg.AgentWorkdir, ".")
 	cfg.AgentPermMode = prompt(in, out, "Agent permission mode (claude only)", cfg.AgentPermMode, "acceptEdits")
+	cfg.LogLevel = prompt(in, out, "Log level", cfg.LogLevel, "debug / info / warn / error")
 	allowRaw := prompt(in, out, "Allow senders (comma-separated, empty = deny all)", joinList(cfg.AllowFrom), "")
 	if allowRaw != "" {
 		cfg.AllowFrom = splitAndTrim(allowRaw)
@@ -209,6 +213,9 @@ func persist(cfg *config.Config) error {
 	if cfg.SessionStore == "" {
 		cfg.SessionStore = def.SessionStore
 	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = def.LogLevel
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -235,6 +242,8 @@ func persist(cfg *config.Config) error {
 		"# --- Loop timing ---\n" +
 		"poll_interval: " + cfg.PollInterval.String() + "   # POLL_INTERVAL (poll tick / IDLE keepalive)\n" +
 		"task_timeout: " + cfg.TaskTimeout.String() + "   # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)\n\n" +
+		"# --- Logging ---\n" +
+		"log_level: " + cfg.LogLevel + "   # LOG_LEVEL (debug / info / warn / error)\n\n" +
 		"# --- Email handling ---\n" +
 		"max_prompt_bytes: " + strconv.FormatInt(int64(cfg.MaxPromptBytes), 10) +
 		"   # MAX_PROMPT_BYTES (truncate huge bodies before the agent sees them)\n" +

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,7 @@ func withCleanEnv(t *testing.T) {
 		"AGENT_EMAIL", "AGENT_AUTH_CODE",
 		"ALLOW_FROM",
 		"POLL_INTERVAL", "TASK_TIMEOUT", "MAX_PROMPT_BYTES",
-		"SESSION_STORE", "TLS_INSECURE_SKIP_VERIFY", "PERCH_CONFIG",
+		"SESSION_STORE", "TLS_INSECURE_SKIP_VERIFY", "LOG_LEVEL", "PERCH_CONFIG",
 	} {
 		t.Setenv(k, "")
 	}
@@ -178,5 +179,84 @@ func TestResolveConfigPathPrefersFlag(t *testing.T) {
 	}
 	if got := ResolveConfigPath(""); got != "/should/be/ignored" {
 		t.Errorf("env should win over defaults, got %q", got)
+	}
+}
+
+func TestLogLevelDefault(t *testing.T) {
+	withCleanEnv(t)
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("default LogLevel = %q, want info", cfg.LogLevel)
+	}
+}
+
+func TestLogLevelFromYAML(t *testing.T) {
+	withCleanEnv(t)
+	yaml := []byte("log_level: debug\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+}
+
+func TestLogLevelEnvOverridesYAML(t *testing.T) {
+	withCleanEnv(t)
+	yaml := []byte("log_level: debug\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+	t.Setenv("LOG_LEVEL", "warn")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogLevel != "warn" {
+		t.Errorf("env LOG_LEVEL should override YAML, got %q", cfg.LogLevel)
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	cases := []struct {
+		in   string
+		want slog.Level
+		err  bool
+	}{
+		{"", slog.LevelInfo, false},
+		{"info", slog.LevelInfo, false},
+		{"INFO", slog.LevelInfo, false},
+		{"  debug ", slog.LevelDebug, false},
+		{"warn", slog.LevelWarn, false},
+		{"warning", slog.LevelWarn, false},
+		{"error", slog.LevelError, false},
+		{"trace", slog.LevelInfo, true}, // unknown → falls back to info
+	}
+	for _, c := range cases {
+		got, err := ParseLogLevel(c.in)
+		if got != c.want {
+			t.Errorf("ParseLogLevel(%q) level = %v, want %v", c.in, got, c.want)
+		}
+		if (err != nil) != c.err {
+			t.Errorf("ParseLogLevel(%q) err = %v, want err=%v", c.in, err, c.err)
+		}
 	}
 }

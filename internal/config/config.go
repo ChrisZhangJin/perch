@@ -27,8 +27,8 @@ import (
 // Config holds all runtime settings. Field names are the source of truth;
 // YAML tags map the new email_provider / ai_agent blocks; env tags map the
 // AGENT_* / ALLOW_FROM / *_INTERVAL / *_TIMEOUT / MAX_* / SESSION_STORE /
-// TLS_INSECURE_SKIP_VERIFY names. The IMAP/SMTP endpoints and the agent
-// binary are NOT here — they're resolved from cfg.ProviderName /
+// TLS_INSECURE_SKIP_VERIFY / LOG_LEVEL names. The IMAP/SMTP endpoints and
+// the agent binary are NOT here — they're resolved from cfg.ProviderName /
 // cfg.AgentName in main.go via the provider and agent packages.
 type Config struct {
 	Email              string
@@ -44,6 +44,7 @@ type Config struct {
 	MaxAttachmentBytes int
 	SessionStore       string
 	TLSInsecure        bool
+	LogLevel           string // "debug" | "info" | "warn" | "error"
 }
 
 // yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
@@ -67,6 +68,7 @@ type yamlConfig struct {
 	MaxAttachmentBytes int           `yaml:"max_attachment_bytes"`
 	SessionStore       string        `yaml:"session_store"`
 	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
+	LogLevel           string        `yaml:"log_level"`
 }
 
 // Load reads the YAML file at cfgPath (or the default search path), layers
@@ -115,6 +117,7 @@ func Defaults() *Config {
 		MaxPromptBytes:     65536,
 		MaxAttachmentBytes: 50 << 20, // 50 MB per attachment
 		SessionStore:       filepath.Join(os.TempDir(), "perch-sessions.json"),
+		LogLevel:           "info",
 	}
 }
 
@@ -203,6 +206,9 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.TLSInsecure {
 		c.TLSInsecure = y.TLSInsecure
+	}
+	if y.LogLevel != "" {
+		c.LogLevel = y.LogLevel
 	}
 	return nil
 }
@@ -304,6 +310,9 @@ func applyEnv(c *Config) {
 			c.TLSInsecure = b
 		}
 	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		c.LogLevel = v
+	}
 }
 
 // normalizeList lower-cases + trims + drops empties. Shared by the YAML and
@@ -329,4 +338,21 @@ func ResolveConfigPath(flag string) string {
 		return v
 	}
 	return firstExisting(defaultConfigPaths())
+}
+
+// ParseLogLevel maps a config.LogLevel string to a slog.Level. Unknown
+// values fall back to slog.LevelInfo and return an explanatory error so the
+// caller can WARN-log it without crashing on a typo.
+func ParseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, fmt.Errorf("unknown log level %q (want debug/info/warn/error); falling back to info", s)
 }

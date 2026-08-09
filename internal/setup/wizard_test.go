@@ -30,6 +30,7 @@ func TestEnsureSilentWhenComplete(t *testing.T) {
 		AgentWorkdir:  ".",
 		AgentPermMode: "acceptEdits",
 		AllowFrom:     []string{"alice@163.com"},
+		LogLevel:      "info",
 	}
 	// No I/O expected — pass buffers and a stub password fn that must not be called.
 	in := &bytes.Buffer{}
@@ -88,9 +89,10 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 		// Email, AuthCode, AllowFrom — wizard fills these.
 	}
 	// Answers in order: email, authcode (via pw fn), allow_from literal.
-	// wizard prompts (in order): provider, agent, workdir, allow_from, email.
-	// Defaults for provider/agent/workdir are set, so empty lines accept them.
-	script := "\n\n\n\nbob@qq.com\nagent@qq.com\n"
+	// wizard prompts (in order): provider, agent, workdir, perm_mode,
+	// log_level, allow_from, email. Defaults for the first five are set,
+	// so empty lines accept them.
+	script := "\n\n\n\n\nbob@qq.com\nagent@qq.com\n"
 	in := strings.NewReader(script)
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
@@ -138,7 +140,7 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 func TestEnsureInteractiveAuthcodeNotEchoed(t *testing.T) {
 	interactiveStdin(t)
 	cfg := &config.Config{} // everything missing => wizard runs
-	in := strings.NewReader("163\nclaude\n.\nacceptEdits\nalice@x\nagent@x\n")
+	in := strings.NewReader("163\nclaude\n.\nacceptEdits\ninfo\nalice@x\nagent@x\n")
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	var usedReadPassword bool
