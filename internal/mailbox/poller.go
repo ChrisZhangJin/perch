@@ -104,4 +104,7 @@ func (p *Poller) MarkSeen(ctx context.Context, uid uint32) error {
 	}, nil).Close()
 }
 
+// Close is intentionally a no-op: Poller holds no persistent connection
+// (each FetchUnseen/MarkSeen dials fresh in dial), so there is nothing to
+// close. Required to satisfy the Mailbox interface.
 func (p *Poller) Close() error { return nil }
