@@ -5,7 +5,8 @@ package agent
 import "fmt"
 
 // Args is everything the runner passes to an agent. Workdir is informational
-// here (runner sets cmd.Dir); PermMode is claude-only and ignored by nanopi/pi.
+// here (runner sets cmd.Dir). PermMode is required by claude; for nanopi
+// it maps to --approve (skip the project-trust prompt); pi ignores it.
 type Args struct {
 	Prompt    string
 	SessionID string

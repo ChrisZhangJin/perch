@@ -12,10 +12,18 @@ func buildClaudeArgs(a Args) []string {
 	return out
 }
 
-// buildNanopiArgs uses --session <sid> for both new and resume (per spec);
-// IsNew is ignored. nanopi has no permission-mode flag.
+// buildNanopiArgs uses --session <sid> for both new and resume; IsNew is
+// ignored. PermMode maps to nanopi's --approve so perch doesn't hang on
+// the project-trust prompt: acceptEdits/bypassPermissions → --approve,
+// any other value (or empty) → no flag (nanopi prompts or uses persisted
+// trust).
 func buildNanopiArgs(a Args) []string {
-	return []string{"-p", a.Prompt, "--yolo", "--output", "text", "--session", a.SessionID}
+	args := []string{"-p", a.Prompt, "--output", "text", "--session", a.SessionID}
+	switch a.PermMode {
+	case "acceptEdits", "bypassPermissions":
+		args = append(args, "--approve")
+	}
+	return args
 }
 
 // buildPiArgs distinguishes new (--session-id) vs resume (--session). PermMode

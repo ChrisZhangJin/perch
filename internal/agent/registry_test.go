@@ -33,21 +33,30 @@ func TestAgentBuildArgs_ClaudeResume(t *testing.T) {
 	}
 }
 
-func TestAgentBuildArgs_NanopiNew(t *testing.T) {
+func TestAgentBuildArgs_NanopiAcceptEdits(t *testing.T) {
 	a, _ := Lookup("nanopi")
-	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w"})
-	want := []string{"-p", "p", "--yolo", "--output", "text", "--session", "sid"}
+	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w", PermMode: "acceptEdits"})
+	want := []string{"-p", "p", "--output", "text", "--session", "sid", "--approve"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("nanopi new = %v, want %v", got, want)
+		t.Errorf("nanopi acceptEdits = %v, want %v", got, want)
 	}
 }
 
-func TestAgentBuildArgs_NanopiResume(t *testing.T) {
+func TestAgentBuildArgs_NanopiBypassPermissions(t *testing.T) {
+	a, _ := Lookup("nanopi")
+	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: true, Workdir: "/w", PermMode: "bypassPermissions"})
+	want := []string{"-p", "p", "--output", "text", "--session", "sid", "--approve"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nanopi bypassPermissions = %v, want %v", got, want)
+	}
+}
+
+func TestAgentBuildArgs_NanopiNoPermMode(t *testing.T) {
 	a, _ := Lookup("nanopi")
 	got := a.BuildArgs(Args{Prompt: "p", SessionID: "sid", IsNew: false, Workdir: "/w"})
-	want := []string{"-p", "p", "--yolo", "--output", "text", "--session", "sid"}
+	want := []string{"-p", "p", "--output", "text", "--session", "sid"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("nanopi resume = %v, want %v", got, want)
+		t.Errorf("nanopi no-permmode = %v, want %v", got, want)
 	}
 }
 
