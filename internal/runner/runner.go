@@ -33,9 +33,20 @@ type Runner struct {
 // adapter (claude only). log is used to DEBUG-log every spawned command
 // (binary + argv + workdir) and exit status, so an operator with log_level=debug
 // can reproduce what perch sent.
+//
+// workdir is resolved to an absolute path before being stored. nanopi
+// records cwd as std::env::current_dir() in ~/.nanopi/sessions/active —
+// that's the resolved absolute path, not the value Go was given — so
+// discoverNanopiSessionID must match against the same form. Without this
+// resolution, a config-supplied "." stores as "." while nanopi stores
+// "/root/workspace/perch" and the discover lookup never matches, leaving
+// perch stuck on its perch-minted UUID on every resume.
 func New(ag *agent.Agent, workdir, permMode string, taskTimeout time.Duration, log *slog.Logger) *Runner {
 	if log == nil {
 		log = slog.Default()
+	}
+	if abs, err := filepath.Abs(workdir); err == nil {
+		workdir = abs
 	}
 	return &Runner{ag: ag, workdir: workdir, permMode: permMode, taskTimeout: taskTimeout, log: log}
 }
@@ -111,11 +122,16 @@ func readSessionHeaderID(path string) string {
 // The framing is deliberate: this is an EMAIL reply, not a CLI session.
 // The agent's stdout becomes the email body verbatim, so the model must
 // (a) skip the internal-monologue preamble that CLI agents default to
-// ("Let me first check..."), (b) not narrate tool calls, and (c) keep the
-// final answer short and direct. Files the agent writes into replyDir are
-// attached to the reply automatically; the body should be a one-line
-// caption, not a transcript of the work.
-func BuildPrompt(from, subject, body string, attachments []string, replyDir string) string {
+// ("Let me first check..."), (b) not narrate tool calls, (c) keep the
+// final answer short and direct, and (d) write a polite email reply with
+// a greeting and sign-off — agents defaulting to a terse CLI tone come
+// across as rude to a human recipient. fromName is the sender's display
+// name from the From header ("Chris"); when non-empty it's used in the
+// salutation ("Hi Chris,"), and the sign-off defaults to "Best,\nTommy".
+// Files the agent writes into replyDir are attached to the reply
+// automatically; the body should be a one-line caption, not a transcript
+// of the work.
+func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q). Your entire stdout will be sent back to them as the body of the reply email — there is no follow-up turn to read intermediate output.\n\n", from, subject)
 	b.WriteString("Reply rules:\n")
@@ -123,7 +139,12 @@ func BuildPrompt(from, subject, body string, attachments []string, replyDir stri
 	b.WriteString("- Do NOT narrate tool calls. Do NOT write phrases like \"Let me check...\", \"I see that...\", \"First I'll...\". The user does not see your reasoning; they only see your final text.\n")
 	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
 	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
-	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n\n")
+	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n")
+	greeting := "Hi"
+	if fromName != "" {
+		greeting = "Hi " + fromName + ","
+	}
+	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\nTommy\"). The body is the email itself, not a chat transcript.\n\n", greeting)
 	b.WriteString("Task:\n")
 	b.WriteString(body)
 	if len(attachments) > 0 {
@@ -146,6 +167,24 @@ func BuildPrompt(from, subject, body string, attachments []string, replyDir stri
 // paths nativeID is "" — callers should keep their perch-invented UUID
 // in that case.
 func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) (string, string, error) {
+	reply, nativeID, err := r.runOnce(ctx, prompt, sessionID, isNew)
+	if err != nil && !isNew && r.ag.Name == "nanopi" && isSessionLostErr(err) {
+		// The perch-minted UUID we stored in the registry no longer maps to
+		// a real nanopi session file (the file was deleted, or the active
+		// pointer drifted to a different cwd, or this thread predates the
+		// workdir-resolution fix). Fall back to a fresh session so the
+		// thread keeps working; discoverNanopiSessionID will hand back the
+		// new UUID and the caller will Replace the registry entry.
+		r.log.Warn("nanopi session lost, starting fresh",
+			"perch_uuid", sessionID, "workdir", r.workdir)
+		return r.runOnce(ctx, prompt, "", true)
+	}
+	return reply, nativeID, err
+}
+
+// runOnce performs a single spawn→exit→discover cycle. Split out so Run
+// can retry on a lost-session error without duplicating the spawn wiring.
+func (r *Runner) runOnce(ctx context.Context, prompt, sessionID string, isNew bool) (string, string, error) {
 	args := r.ag.BuildArgs(agent.Args{
 		Prompt:    prompt,
 		SessionID: sessionID,
@@ -208,6 +247,17 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 	)
 	reply := strings.TrimSpace(stdout.String())
 
+	// Log the agent's reply verbatim so an operator with log_level=debug
+	// can see exactly what would have been emailed back — without this
+	// the DEBUG traces only show argv + sizes, and an operator who wants
+	// to know "what did the agent actually decide" has to fish through
+	// their mailbox. Replies can include email bodies from real senders,
+	// so we treat the value as sensitive content and emit it under a
+	// dedicated key the operator can filter / suppress if needed.
+	if reply != "" {
+		r.log.Debug("agent reply", "reply", reply)
+	}
+
 	// Discover the agent's native session id (only nanopi, only after a
 	// successful IsNew=true run where we omitted --session). Returns ""
 	// otherwise — callers treat empty as "no update needed".
@@ -219,6 +269,15 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 		}
 	}
 	return cleanAgentOutput(reply, r.ag.Name), nativeID, nil
+}
+
+// isSessionLostErr matches nanopi's "first line must be a session header"
+// error, which it emits when --session points to a UUID whose .jsonl file
+// no longer exists. Triggering a fresh-session fallback is safe because
+// nanopi will mint a new UUID and perch will adopt it via the normal
+// discover→Replace path.
+func isSessionLostErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "first line must be a session header")
 }
 
 // cleanAgentOutput strips agent-side rendering noise from captured stdout

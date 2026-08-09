@@ -27,14 +27,14 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Do X", "please do X", nil, "")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "")
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
 	}
 }
 
 func TestBuildPromptAttachmentHints(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply")
 	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -47,7 +47,7 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 // of replying. Regression for the screenshot incident where the agent
 // wrote "I'll help you respond to Chris's email" as the reply.
 func TestBuildPromptMentionsEmailBody(t *testing.T) {
-	p := BuildPrompt("x@y", "subj", "task", nil, "")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "")
 	for _, want := range []string{
 		"email",
 		"stdout",
@@ -66,7 +66,7 @@ func TestBuildPromptMentionsEmailBody(t *testing.T) {
 // names the exact phrases the screenshot regression hit ("let me check",
 // "i will respond", etc.) — those phrases must appear in a "do NOT" rule.
 func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
-	p := BuildPrompt("x@y", "subj", "task", nil, "")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "")
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "do not narrate") {
 		t.Errorf("prompt must contain a 'do not narrate' rule, got:\n%s", p)
@@ -245,6 +245,155 @@ func TestCleanAgentOutput_OtherAgentPassthrough(t *testing.T) {
 	raw := "Here's the answer you asked for.\n\nTwo paragraphs even."
 	if got := cleanAgentOutput(raw, "claude"); got != raw {
 		t.Errorf("non-nanopi should pass through, got %q", got)
+	}
+}
+
+// TestNewResolvesWorkdir pins the workdir resolution: nanopi writes
+// cwd as std::env::current_dir() in ~/.nanopi/sessions/active, which is
+// the resolved absolute path — not the literal "." from a config file.
+// If we stored the workdir un-resolved, discoverNanopiSessionID would
+// look up "." in active and never match nanopi's stored
+// "/root/workspace/perch", silently breaking every resume on the
+// perch-minted UUID.
+func TestNewResolvesWorkdir(t *testing.T) {
+	bin, _ := writeStub(t, `echo ok`)
+	ag, err := agent.Lookup("nanopi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag.Binary = bin
+
+	// "." should be resolved to the test runner's cwd (an absolute path).
+	r := New(&ag, ".", "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !filepath.IsAbs(r.workdir) {
+		t.Errorf("workdir should be absolute, got %q", r.workdir)
+	}
+
+	// An already-absolute path should pass through unchanged.
+	abs := filepath.Join(t.TempDir(), "workdir")
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r2 := New(&ag, abs, "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if r2.workdir != abs {
+		t.Errorf("workdir should pass through unchanged, got %q want %q", r2.workdir, abs)
+	}
+}
+
+// runnerFromNanopiStub wires a Runner against a stub binary using the
+// nanopi adapter, so the resume-fallback tests can exercise the nanopi
+// error path without depending on the real nanopi CLI.
+func runnerFromNanopiStub(t *testing.T, bin string) *Runner {
+	t.Helper()
+	ag, err := agent.Lookup("nanopi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag.Binary = bin
+	return New(&ag, t.TempDir(), "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// TestRunNanopiResumeFallback pins the soft-fallback when the perch-
+// minted UUID stored in the registry no longer maps to a real nanopi
+// session file. Without the fallback, every email after the drift fails
+// with "first line must be a session header" and the user gets a "task
+// failed" email instead of a reply.
+func TestRunNanopiResumeFallback(t *testing.T) {
+	// First invocation (resume) writes the lost-session error to stderr
+	// and exits non-zero. Second invocation (fresh, no --session) writes
+	// a reply and exits 0. The stub writes which invocation it was to
+	// argfile so the test can assert the fallback actually happened.
+	bin, argfile := writeStub(t, `if [ "$1" = "--session" ]; then
+  echo "error: resolve session: first line must be a session header" >&2
+  exit 1
+fi
+echo "REPLY-AFTER-FALLBACK"`)
+
+	r := runnerFromNanopiStub(t, bin)
+	out, _, err := r.Run(context.Background(), "hi", "lost-uuid", false)
+	if err != nil {
+		t.Fatalf("Run should fall back, got error: %v", err)
+	}
+	if out != "REPLY-AFTER-FALLBACK" {
+		t.Errorf("out = %q, want REPLY-AFTER-FALLBACK", out)
+	}
+	args, _ := os.ReadFile(argfile)
+	if !strings.Contains(string(args), "lost-uuid") {
+		t.Errorf("first invocation should have carried lost-uuid, got: %s", args)
+	}
+}
+
+// TestRunNanopiResumeNoFallback confirms a normal nanopi resume error
+// (NOT "first line must be a session header") does NOT trigger the
+// fresh-session fallback. We don't want to mask real bugs by silently
+// throwing away the perch UUID.
+func TestRunNanopiResumeNoFallback(t *testing.T) {
+	bin, _ := writeStub(t, `echo "some other error" >&2; exit 7`)
+	_, _, err := runnerFromNanopiStub(t, bin).Run(context.Background(), "hi", "uuid", false)
+	if err == nil {
+		t.Fatal("expected error to surface, got nil")
+	}
+	if !strings.Contains(err.Error(), "some other error") {
+		t.Errorf("error should pass through unchanged, got: %v", err)
+	}
+}
+
+// TestRunClaudeResumeDoesNotFallback confirms the soft-fallback is
+// nanopi-only. claude surfaces its own resume errors and perch should
+// not paper over them by silently starting fresh.
+func TestRunClaudeResumeDoesNotFallback(t *testing.T) {
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "invocations")
+	bin := filepath.Join(dir, "stubclaude")
+	script := "#!/bin/sh\n" +
+		"echo $(( $(cat " + counter + " 2>/dev/null || echo 0) + 1 )) > " + counter + "\n" +
+		"echo \"first line must be a session header\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ag, err := agent.Lookup("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag.Binary = bin
+	r := New(&ag, t.TempDir(), "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, _, err = r.Run(context.Background(), "hi", "uuid", false)
+	if err == nil {
+		t.Fatal("expected error to surface for claude, got nil")
+	}
+	// Stub ran exactly once — no fallback invocation.
+	count, _ := os.ReadFile(counter)
+	if strings.TrimSpace(string(count)) != "1" {
+		t.Errorf("claude should not retry; invocations = %q", count)
+	}
+}
+
+// TestBuildPromptIncludesGreeting pins the politeness framing: the agent
+// must know it's replying to a real human and must include a salutation
+// and sign-off in its reply. Without this rule the model defaults to a
+// terse CLI tone and the email recipient reads it as rude. Regression for
+// the 2026-08-09 screenshot where the agent replied with no greeting and
+// no sign-off.
+func TestBuildPromptIncludesGreeting(t *testing.T) {
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "")
+	low := strings.ToLower(p)
+	if !strings.Contains(low, "hi chris") {
+		t.Errorf("prompt should instruct greeting using fromName=Chris, got:\n%s", p)
+	}
+	if !strings.Contains(p, "Tommy") {
+		t.Errorf("prompt should include sign-off name 'Tommy', got:\n%s", p)
+	}
+}
+
+// TestBuildPromptGreetingFallback covers the no-From-name case (mailing
+// list, automated sender): the salutation guidance should still be there,
+// just without a specific name to drop in.
+func TestBuildPromptGreetingFallback(t *testing.T) {
+	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "")
+	if !strings.Contains(p, "polite salutation") {
+		t.Errorf("prompt should still mention politeness when fromName is empty, got:\n%s", p)
 	}
 }
 

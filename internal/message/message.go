@@ -26,6 +26,7 @@ type Attachment struct {
 type Message struct {
 	UID         uint32
 	From        string // lowercased addr-spec, e.g. "alice@163.com"
+	FromName    string // display name from the From header, "" if absent
 	MessageID   string // e.g. "<abc@163.com>"
 	InReplyTo   string
 	References  []string
@@ -57,6 +58,7 @@ func Parse(r io.Reader, uid uint32, maxBody, maxAttach int) (*Message, error) {
 
 	if addrs, err := h.AddressList("From"); err == nil && len(addrs) > 0 {
 		m.From = strings.ToLower(strings.TrimSpace(addrs[0].Address))
+		m.FromName = strings.TrimSpace(addrs[0].Name)
 	}
 	m.Subject, _ = h.Subject()
 	m.MessageID = firstMsgID(h.Get("Message-Id"))

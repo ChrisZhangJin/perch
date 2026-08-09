@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,8 +24,23 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/setup"
 )
 
-// version is set at build time via -ldflags "-X main.version=...".
-var version = "dev"
+// version and commit are set at link time via
+//   -ldflags "-X main.version=0.2.0 -X main.commit=abcdef0"
+// Defaults match `go run` and local builds without ldflags.
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
+// versionString formats the value printed by --version and the startup log.
+// When commit is "unknown" we omit it; otherwise append " (commit <hash>)"
+// so two dev builds of the same Version are still distinguishable.
+func versionString() string {
+	if commit == "unknown" {
+		return version
+	}
+	return version + " (commit " + commit + ")"
+}
 
 // realReadPassword is the production PasswordFn: it delegates to
 // golang.org/x/term so the auth code is not echoed. Test code passes its own.
@@ -34,7 +50,17 @@ func realReadPassword(fd int) ([]byte, error) {
 
 func main() {
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
+	showVersion := flag.Bool("version", false, "print version and exit. Shorthand: -V.")
+	logLevel := flag.String("log-level", "", "override log_level (debug|info|warn|error). Wins over YAML log_level. Effective for this run only.")
+	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
+
+	// --version short-circuits before any config / network work so the
+	// flag is useful in scripts and CI without needing a valid config.
+	if *showVersion {
+		fmt.Println("perch " + versionString())
+		os.Exit(0)
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -45,13 +71,19 @@ func main() {
 		fallback.Error("config", "err", err)
 		os.Exit(1)
 	}
-	level, lvlErr := config.ParseLogLevel(cfg.LogLevel)
+	// Precedence: CLI --log-level > LOG_LEVEL env (already folded into
+	// cfg.LogLevel by config.applyEnv) > YAML log_level > built-in "info".
+	levelSource := cfg.LogLevel
+	if *logLevel != "" {
+		levelSource = *logLevel
+	}
+	level, lvlErr := config.ParseLogLevel(levelSource)
 	log := slog.New(plog.New(os.Stderr, level))
 	slog.SetDefault(log)
 	if lvlErr != nil {
-		log.Warn("log level", "err", lvlErr)
+		log.Warn("log level", "err", lvlErr, "value", levelSource)
 	}
-	log.Info("perch starting", "version", version, "log_level", level.String())
+	log.Info("perch starting", "version", versionString(), "log_level", level.String())
 	if used := config.ResolveConfigPath(*configPath); used != "" {
 		log.Info("config loaded", "path", used)
 	} else {
