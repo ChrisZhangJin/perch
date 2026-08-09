@@ -34,11 +34,11 @@ func TestProviderEndpoints(t *testing.T) {
 			if got.SMTPAddr != c.smtp {
 				t.Errorf("SMTPAddr = %q, want %q", got.SMTPAddr, c.smtp)
 			}
-			if got.NeedsIMAPID != c.needsIMAPID {
-				t.Errorf("NeedsIMAPID = %v, want %v", got.NeedsIMAPID, c.needsIMAPID)
+			if got.Caps.NeedsIMAPID != c.needsIMAPID {
+				t.Errorf("Caps.NeedsIMAPID = %v, want %v", got.Caps.NeedsIMAPID, c.needsIMAPID)
 			}
-			if got.SupportsIDLE != c.supportsIDLE {
-				t.Errorf("SupportsIDLE = %v, want %v", got.SupportsIDLE, c.supportsIDLE)
+			if got.Caps.SupportsIDLE != c.supportsIDLE {
+				t.Errorf("Caps.SupportsIDLE = %v, want %v", got.Caps.SupportsIDLE, c.supportsIDLE)
 			}
 		})
 	}
