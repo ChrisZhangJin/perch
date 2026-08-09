@@ -56,7 +56,8 @@ func TestEnsureNonInteractiveFailsLoud(t *testing.T) {
 		AgentName:     "claude",
 		AgentWorkdir:  ".",
 		AgentPermMode: "acceptEdits",
-		// AllowFrom also missing
+		// AllowFrom empty by design — not required for headless start; an
+		// empty allow_from means "deny all" and is the safe default.
 	}
 	in := &bytes.Buffer{} // empty => "not a TTY" path
 	out := &bytes.Buffer{}
@@ -66,10 +67,11 @@ func TestEnsureNonInteractiveFailsLoud(t *testing.T) {
 		t.Fatalf("expected ErrMissingFields, got %v", err)
 	}
 	msg := errOut.String()
-	for _, want := range []string{"authcode", "allow_from"} {
-		if !strings.Contains(strings.ToLower(msg), want) {
-			t.Errorf("error output missing %q: %s", want, msg)
-		}
+	if !strings.Contains(strings.ToLower(msg), "authcode") {
+		t.Errorf("error output missing %q: %s", "authcode", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "allow_from") {
+		t.Errorf("error should NOT mention allow_from (no longer required for startup): %s", msg)
 	}
 	if !strings.Contains(msg, "AGENT_EMAIL") {
 		t.Errorf("error should mention AGENT_EMAIL env var: %s", msg)

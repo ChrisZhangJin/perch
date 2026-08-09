@@ -47,6 +47,11 @@ func Ensure(cfg *config.Config, stdin io.Reader, stdout io.Writer, stderr io.Wri
 }
 
 // missingFields returns the cfg field names that still need to be populated.
+// AllowFrom is intentionally NOT here — the wizard prompts for it on
+// interactive first run and persists it to the YAML file, but for
+// headless (env-vars-only) setups an empty allow_from means "deny all"
+// which is the safe default (perch logs WARN and ignores non-whitelisted
+// senders), so we don't block startup over it.
 func missingFields(cfg *config.Config) []string {
 	var m []string
 	if cfg.Email == "" {
@@ -66,9 +71,6 @@ func missingFields(cfg *config.Config) []string {
 	}
 	if cfg.AgentPermMode == "" {
 		m = append(m, "agent.permission_mode")
-	}
-	if len(cfg.AllowFrom) == 0 {
-		m = append(m, "allow_from")
 	}
 	return m
 }
