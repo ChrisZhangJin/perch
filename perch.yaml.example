@@ -15,7 +15,14 @@
 
 # --- Email provider --------------------------------------------------------
 # Built-in names. Each one bakes in the right IMAP/SMTP endpoints and the
-# per-provider transport quirks (IMAP ID requirement, IDLE support).
+# per-provider transport quirks (IMAP ID requirement, IDLE support). The
+# transport strategy is picked from these capabilities at startup:
+#
+#   163 / 126  → Poller  (short-conn, poll-only — server has no IDLE)
+#   qq         → IMAPMailbox + IDLETrigger (long-conn, idle+poll)
+#
+# No additional config needed — perch picks based on the provider's
+# built-in Capabilities.
 email_provider:
   name: 163           # 163 | 126 | qq
   # name: 126

@@ -18,13 +18,12 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/session"
 )
 
-// Mailbox is the mail transport the app drives. Implementations must NOT be
-// called concurrently: the app alternates FetchUnseen and WaitForActivity on
-// one goroutine.
+// Mailbox is the mail transport the app drives. It exposes only commands;
+// wake/sleep semantics live in Trigger implementations, which the app fans
+// in on a single goroutine and dispatches to ProcessUnseen.
 type Mailbox interface {
 	FetchUnseen(ctx context.Context) ([]mailbox.Raw, error)
 	MarkSeen(ctx context.Context, uid uint32) error
-	WaitForActivity(ctx context.Context, timeout time.Duration) error
 	Close() error
 }
 
@@ -39,18 +38,22 @@ type ReplySender interface {
 }
 
 type App struct {
-	cfg  *config.Config
-	mb   Mailbox
-	gate *gate.Gate
-	sess *session.Registry
-	run  TaskRunner
-	rep  ReplySender
-	log  *slog.Logger
-	mu   sync.Mutex // guards ProcessUnseen (defensive; app drives it serially)
+	cfg      *config.Config
+	mb       Mailbox
+	gate     *gate.Gate
+	sess     *session.Registry
+	run      TaskRunner
+	rep      ReplySender
+	log      *slog.Logger
+	triggers []mailbox.Trigger
+	mu       sync.Mutex // guards ProcessUnseen (defensive; app drives it serially)
 }
 
-func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, run TaskRunner, rep ReplySender, log *slog.Logger) *App {
-	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log}
+func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, run TaskRunner, rep ReplySender, log *slog.Logger, triggers ...mailbox.Trigger) *App {
+	if len(triggers) == 0 {
+		triggers = []mailbox.Trigger{mailbox.TimerTrigger{Interval: cfg.PollInterval}}
+	}
+	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log, triggers: triggers}
 }
 
 // ProcessUnseen fetches and handles every currently-unseen message:
@@ -170,28 +173,48 @@ func (a *App) notifyReplyFailure(m *message.Message, body string, attachments []
 	}
 }
 
-// Run alternates processing and IDLE-with-timeout on a single connection:
-// IDLE returns early on new mail (near-real-time), or after PollInterval as a
-// safety poll. No concurrent use of the mailbox connection.
+// Run drives a main loop that fans in N trigger goroutines (one per
+// trigger) and calls ProcessUnseen on every coalesced wake. Each trigger
+// blocks in Wait until either its condition fires or the context cancels;
+// it then signals a shared size-1 wake channel (drain semantics: extra
+// wakes while a ProcessUnseen is in flight are coalesced into one). On a
+// trigger error we log and back off.
 func (a *App) Run(ctx context.Context) error {
+	wake := make(chan struct{}, 1)
+	for _, t := range a.triggers {
+		go func(t mailbox.Trigger) {
+			for {
+				if err := t.Wait(ctx); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					a.log.Warn("trigger wait failed", "err", err)
+					if !sleep(ctx, a.cfg.PollInterval) { // backoff, ctx-aware
+						return
+					}
+					continue
+				}
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}(t)
+	}
+
 	for {
-		if err := a.ProcessUnseen(ctx); err != nil {
-			a.log.Error("process failed", "err", err)
-			if !sleep(ctx, 5*time.Second) {
-				return a.shutdown()
-			}
-			continue
-		}
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return a.shutdown()
-		}
-		if err := a.mb.WaitForActivity(ctx, a.cfg.PollInterval); err != nil {
-			if ctx.Err() != nil {
-				return a.shutdown()
-			}
-			a.log.Warn("idle wait failed; falling back to poll", "err", err)
-			if !sleep(ctx, a.cfg.PollInterval) {
-				return a.shutdown()
+		case <-wake:
+			if err := a.ProcessUnseen(ctx); err != nil {
+				a.log.Error("process failed", "err", err)
+				if !sleep(ctx, 5*time.Second) {
+					return a.shutdown()
+				}
 			}
 		}
 	}

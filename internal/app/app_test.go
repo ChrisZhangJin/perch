@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/gate"
@@ -32,9 +31,6 @@ func (f *fakeMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seen = append(f.seen, uid)
-	return nil
-}
-func (f *fakeMailbox) WaitForActivity(ctx context.Context, timeout time.Duration) error {
 	return nil
 }
 func (f *fakeMailbox) Close() error { return nil }

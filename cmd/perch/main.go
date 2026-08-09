@@ -68,30 +68,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	mb, err := mailbox.Dial(cfg, p.IMAPAddr)
-	if err != nil {
-		log.Error("mailbox dial", "err", err)
-		os.Exit(1)
-	}
 	g, err := gate.New(cfg.AllowFrom)
 	if err != nil {
 		log.Error("gate build", "err", err)
 		os.Exit(1)
 	}
-	if mb.IdleSupported() {
-		log.Info("mailbox ready", "mode", "idle+poll")
-	} else {
-		log.Info("mailbox ready", "mode", "poll-only", "note", "server has no IMAP IDLE; using POLL_INTERVAL")
+	strat, err := mailbox.BuildStrategy(cfg, p)
+	if err != nil {
+		log.Error("mailbox dial", "err", err)
+		os.Exit(1)
 	}
+	mode := "poll-only"
+	if p.Caps.SupportsIDLE {
+		mode = "idle+poll"
+	}
+	note := ""
+	if mode == "poll-only" {
+		note = "server has no IMAP IDLE; using POLL_INTERVAL"
+	}
+	log.Info("mailbox ready", "mode", mode, "note", note)
 	sess, err := session.Load(cfg.SessionStore)
 	if err != nil {
 		log.Error("session load", "err", err)
 		os.Exit(1)
 	}
-	a := app.New(cfg, mb, g, sess,
+	a := app.New(cfg, strat.Box, g, sess,
 		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout),
 		replier.New(cfg, p.SMTPAddr),
 		log,
+		strat.Triggers...,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
