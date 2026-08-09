@@ -173,10 +173,12 @@ func (a *App) notifyReplyFailure(m *message.Message, body string, attachments []
 	}
 }
 
-// Run drives one goroutine that fans in triggers and calls ProcessUnseen.
-// Each trigger blocks in Wait until either its condition fires or the context
-// cancels; it then signals a shared wake channel. The main loop receives
-// from wake and processes; on a trigger error we log and back off.
+// Run drives a main loop that fans in N trigger goroutines (one per
+// trigger) and calls ProcessUnseen on every coalesced wake. Each trigger
+// blocks in Wait until either its condition fires or the context cancels;
+// it then signals a shared size-1 wake channel (drain semantics: extra
+// wakes while a ProcessUnseen is in flight are coalesced into one). On a
+// trigger error we log and back off.
 func (a *App) Run(ctx context.Context) error {
 	wake := make(chan struct{}, 1)
 	for _, t := range a.triggers {
@@ -187,7 +189,9 @@ func (a *App) Run(ctx context.Context) error {
 						return
 					}
 					a.log.Warn("trigger wait failed", "err", err)
-					time.Sleep(a.cfg.PollInterval) // backoff
+					if !sleep(ctx, a.cfg.PollInterval) { // backoff, ctx-aware
+						return
+					}
 					continue
 				}
 				select {

@@ -26,6 +26,9 @@ func NewPoller(cfg *config.Config, addr string) *Poller {
 }
 
 // dial is the IMAP login + SELECT INBOX helper shared by every short call.
+// The ctx parameter is accepted for interface symmetry but is best-effort:
+// the underlying imapclient library (DialTLS, ID, Login, Select) does not
+// honour ctx, so cancellation only takes effect on the next call boundary.
 func (p *Poller) dial(ctx context.Context) (*imapclient.Client, error) {
 	c, err := imapclient.DialTLS(p.addr, &imapclient.Options{
 		TLSConfig: p.tlsConfig(),

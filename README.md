@@ -54,7 +54,7 @@ Future `S` mode (server-push webhook, e.g. Gmail Pub/Sub) is a one-line addition
 
 ```text
 P mode:  for { sleep(POLL_INTERVAL); fetch(dial→UIDSearch→Fetch→Logout→Close); mark seen }
-L mode:  for { fetch; IDLE up to POLL_INTERVAL (early-exit on EXISTS); }   // shared connection
+L mode:  for { IDLE up to POLL_INTERVAL (early-exit on EXISTS); fetch; }   // shared connection
 ```
 
 Per message: `parse → dedup (\Seen + in-memory set) → whitelist → map thread to a stable

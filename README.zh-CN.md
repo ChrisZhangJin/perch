@@ -52,7 +52,7 @@ agent(默认 Claude Code,任何 CLI 都行)处理,并在同一邮件线程内回
 
 ```text
 P 模式: for { sleep(POLL_INTERVAL); fetch(Dial→UIDSearch→Fetch→Logout→Close); mark seen }
-L 模式: for { fetch; IDLE 最长到 POLL_INTERVAL(有 EXISTS 立刻返回); }   // 共享连接
+L 模式: for { IDLE 最长到 POLL_INTERVAL(有 EXISTS 立刻返回); fetch; }   // 共享连接
 ```
 
 每封邮件:`解析 → 去重(\Seen + 内存集合) → 白名单 → 把邮件线程映射到稳定的 agent 会话
