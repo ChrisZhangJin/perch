@@ -9,9 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 )
@@ -166,6 +165,13 @@ func splitAndTrim(s string) []string {
 // persist writes the non-secret fields of cfg to ~/.perch/perch.yaml
 // with mode 0600. AuthCode is NEVER written — only AGENT_AUTH_CODE env var.
 // Email IS written so unattended restarts don't have to re-enter it.
+//
+// The file is fully populated: fields the wizard prompted for carry the
+// operator's answer; fields the wizard did not prompt for (loop timing,
+// byte caps, session store, TLS) are written with their built-in default
+// and an inline comment so the operator can see every knob that exists.
+// Format is hand-written (not yaml.Marshal) so comments can sit next to
+// the values they describe.
 func persist(cfg *config.Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -177,32 +183,88 @@ func persist(cfg *config.Config) error {
 	}
 	path := filepath.Join(dir, "perch.yaml")
 
-	type persisted struct {
-		Email         string   `yaml:"email"`
-		EmailProvider struct {
-			Name string `yaml:"name"`
-		} `yaml:"email_provider"`
-		AIAgent struct {
-			Name           string `yaml:"name"`
-			Workdir        string `yaml:"workdir"`
-			PermissionMode string `yaml:"permission_mode"`
-		} `yaml:"ai_agent"`
-		AllowFrom []string `yaml:"allow_from"`
+	allowFrom := cfg.AllowFrom
+	if len(allowFrom) == 0 {
+		allowFrom = []string{} // explicit empty list, not null
 	}
-	var p persisted
-	p.Email = cfg.Email
-	p.EmailProvider.Name = cfg.ProviderName
-	p.AIAgent.Name = cfg.AgentName
-	p.AIAgent.Workdir = cfg.AgentWorkdir
-	p.AIAgent.PermissionMode = cfg.AgentPermMode
-	p.AllowFrom = cfg.AllowFrom
 
-	body, err := yaml.Marshal(p)
-	if err != nil {
-		return err
+	// Apply built-in defaults for any field the wizard didn't prompt for
+	// (loop timing, byte caps, session store, TLS). The wizard writes a
+	// fully populated file so the operator can see every knob that exists.
+	// Defaults are pulled from config.Defaults() so a future change to
+	// the default in one place flows to both places.
+	def := config.Defaults()
+	if cfg.PollInterval == 0 {
+		cfg.PollInterval = def.PollInterval
 	}
-	header := []byte("# perch configuration (written by setup wizard).\n" +
+	if cfg.TaskTimeout == 0 {
+		cfg.TaskTimeout = def.TaskTimeout
+	}
+	if cfg.MaxPromptBytes == 0 {
+		cfg.MaxPromptBytes = def.MaxPromptBytes
+	}
+	if cfg.MaxAttachmentBytes == 0 {
+		cfg.MaxAttachmentBytes = def.MaxAttachmentBytes
+	}
+	if cfg.SessionStore == "" {
+		cfg.SessionStore = def.SessionStore
+	}
+
+	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
-		"# AGENT_EMAIL is read from this file when not set in env.\n\n")
-	return os.WriteFile(path, append(header, body...), 0o600)
+		"# AGENT_EMAIL is read from this file when not set in env.\n" +
+		"# Edit any field below; perch re-reads this file on every start.\n\n" +
+		"# --- Email provider ---\n" +
+		"# 163 / 126 → Poller (short-conn, poll-only — server has no IDLE)\n" +
+		"# qq        → IMAPMailbox + IDLETrigger (long-conn, idle+poll)\n" +
+		"email_provider:\n" +
+		"  name: " + cfg.ProviderName + "\n\n" +
+		"# --- AI agent ---\n" +
+		"ai_agent:\n" +
+		"  name: " + cfg.AgentName + "\n" +
+		"  workdir: " + cfg.AgentWorkdir + "\n" +
+		"  permission_mode: " + cfg.AgentPermMode + "   # claude only; nanopi/pi ignore\n\n" +
+		"# --- Whitelist ---\n" +
+		"# ONLY these senders can wake the agent. Empty list = deny everyone.\n" +
+		"# Each entry is a literal address, or a regex prefixed with s\"...\"\n" +
+		"# Use ALLOW_FROM env var for literals only (regexes belong in this file).\n" +
+		"allow_from:\n" +
+		formatAllowFrom(allowFrom) + "\n" +
+		"# --- Account ---\n" +
+		"email: " + cfg.Email + "   # AGENT_EMAIL env var overrides\n\n" +
+		"# --- Loop timing ---\n" +
+		"poll_interval: " + cfg.PollInterval.String() + "   # POLL_INTERVAL (poll tick / IDLE keepalive)\n" +
+		"task_timeout: " + cfg.TaskTimeout.String() + "   # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)\n\n" +
+		"# --- Email handling ---\n" +
+		"max_prompt_bytes: " + strconv.FormatInt(int64(cfg.MaxPromptBytes), 10) +
+		"   # MAX_PROMPT_BYTES (truncate huge bodies before the agent sees them)\n" +
+		"max_attachment_bytes: " + strconv.FormatInt(int64(cfg.MaxAttachmentBytes), 10) +
+		"   # MAX_ATTACH_BYTES (per-attachment size cap; oversized ones are dropped)\n\n" +
+		"# --- Persistence ---\n" +
+		"# thread-root → agent session map (JSON). Survives restarts.\n" +
+		"# (default = $TMPDIR/perch-sessions.json)\n" +
+		"session_store: " + cfg.SessionStore +
+		"   # SESSION_STORE\n\n" +
+		"# --- TLS ---\n" +
+		"# DEV/TEST ONLY — accepts self-signed certs (e.g. a local GreenMail).\n" +
+		"# NEVER enable against a real mailbox.\n" +
+		"tls_insecure_skip_verify: " + strconv.FormatBool(cfg.TLSInsecure) +
+		"   # TLS_INSECURE_SKIP_VERIFY\n"
+
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// formatAllowFrom renders an AllowFrom slice as YAML list items. Empty
+// slices produce an empty list body (operator can leave it empty = deny all).
+func formatAllowFrom(items []string) string {
+	if len(items) == 0 {
+		return "  []\n"
+	}
+	var b strings.Builder
+	for _, a := range items {
+		b.WriteString("  - ")
+		b.WriteString(a)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

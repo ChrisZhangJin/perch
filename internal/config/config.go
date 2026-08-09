@@ -78,7 +78,7 @@ type yamlConfig struct {
 // `AGENT_EMAIL` always overrides it.
 func Load(cfgPath string) (*Config, error) {
 	// 1. Built-in defaults.
-	c := defaults()
+	c := Defaults()
 
 	// 2. YAML layer (if a file is found).
 	if cfgPath == "" {
@@ -100,9 +100,11 @@ func Load(cfgPath string) (*Config, error) {
 	return c, nil
 }
 
-// defaults returns the built-in fallback values. Anything zero here is
-// overridden by YAML or env; this is the bottom of the stack.
-func defaults() *Config {
+// Defaults returns the built-in fallback values. Anything zero here is
+// overridden by YAML or env; this is the bottom of the stack. Exported
+// so other packages (notably setup's persist) can render the same defaults
+// into the wizard-written config file.
+func Defaults() *Config {
 	return &Config{
 		ProviderName:       "163",
 		AgentName:          "claude",
