@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ChrisZhangJin/perch/internal/agent"
 	"github.com/ChrisZhangJin/perch/internal/config"
 )
 
@@ -114,7 +115,7 @@ func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) e
 	fmt.Fprintln(out)
 
 	cfg.ProviderName = prompt(in, out, "Email provider", cfg.ProviderName, "163 / 126 / qq")
-	cfg.AgentName = prompt(in, out, "AI agent", cfg.AgentName, "claude / nanopi / pi")
+	cfg.AgentName = promptAgent(in, out, cfg.AgentName)
 	cfg.AgentWorkdir = prompt(in, out, "Agent workdir", cfg.AgentWorkdir, ".")
 	cfg.AgentPermMode = prompt(in, out, "Agent permission mode (claude only)", cfg.AgentPermMode, "acceptEdits")
 	cfg.LogLevel = prompt(in, out, "Log level", cfg.LogLevel, "debug / info / warn / error")
@@ -160,6 +161,28 @@ func prompt(in io.Reader, out io.Writer, label, def, hint string) string {
 
 func joinList(xs []string) string {
 	return strings.Join(xs, ", ")
+}
+
+// promptAgent is prompt() with a binary-on-PATH check after each pick.
+// The wizard refuses to accept an agent name whose binary isn't found —
+// perch dies with a confusing error otherwise when the runner tries to
+// exec a missing command. On EOF (non-TTY) we keep the default and let
+// the daemon preflight catch it later, matching how other fields work.
+func promptAgent(in io.Reader, out io.Writer, def string) string {
+	for {
+		got := prompt(in, out, "AI agent", def, "claude / nanopi / pi")
+		// Empty here means EOF or scan error inside prompt() — keep default.
+		if got == "" {
+			return def
+		}
+		if _, err := agent.BinaryPath(got); err != nil {
+			fmt.Fprintf(out, "  ! %v\n", err)
+			fmt.Fprintln(out, "    pick another, or Ctrl-D to abort.")
+			def = got // last attempted value, so re-prompt doesn't reset hint
+			continue
+		}
+		return got
+	}
 }
 
 func splitAndTrim(s string) []string {

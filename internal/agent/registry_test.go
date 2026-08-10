@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -98,5 +100,38 @@ func TestAgentLookupUnknown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "claude") {
 		t.Errorf("error should list valid names, got: %v", err)
+	}
+}
+
+func TestBinaryPath_UnknownName(t *testing.T) {
+	_, err := BinaryPath("not-an-agent")
+	if err == nil {
+		t.Fatal("expected error for unknown agent name")
+	}
+	if strings.Contains(err.Error(), ErrBinaryNotFound.Error()) {
+		t.Errorf("unknown-name error must not be ErrBinaryNotFound, got: %v", err)
+	}
+}
+
+func TestBinaryPath_KnownButMissing(t *testing.T) {
+	// Probe the registry's binary for "pi" directly via exec.LookPath.
+	// If it exists on this machine (developer env), skip — we can't
+	// deterministically force the missing case without mutating the
+	// package's private table. The wrapping contract is the same
+	// either way: if LookPath fails, BinaryPath must return
+	// ErrBinaryNotFound with the binary name in the message.
+	a, _ := Lookup("pi")
+	if _, err := exec.LookPath(a.Binary); err == nil {
+		t.Skip("pi binary exists on this machine; cannot test missing-PATH path")
+	}
+	_, bpErr := BinaryPath("pi")
+	if bpErr == nil {
+		t.Fatal("expected ErrBinaryNotFound when binary missing on PATH")
+	}
+	if !errors.Is(bpErr, ErrBinaryNotFound) {
+		t.Errorf("expected ErrBinaryNotFound, got: %v", bpErr)
+	}
+	if !strings.Contains(bpErr.Error(), "pi") {
+		t.Errorf("error should mention the binary name, got: %v", bpErr)
 	}
 }

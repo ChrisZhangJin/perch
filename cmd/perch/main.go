@@ -141,6 +141,16 @@ func main() {
 				"hint: run `./perch` (no flag) once interactively to fill the wizard, then re-run with --daemon.")
 			os.Exit(2)
 		}
+		// Preflight the agent binary too. Without this, a stale config
+		// pointing at a missing binary causes the daemon child to crash
+		// silently on first email (stdio is /dev/null, so the runner's
+		// exec error is invisible).
+		if _, err := agent.BinaryPath(preCfg.AgentName); err != nil {
+			fmt.Fprintf(os.Stderr, "perch: daemon: %v\n", err)
+			fmt.Fprintln(os.Stderr,
+				"hint: install the binary, fix PATH, or re-run `./perch` to pick a different agent.")
+			os.Exit(1)
+		}
 		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
 		childPID, err := daemon.Daemonize(os.Args[1:], pidfilePath, nil)
 		if err != nil {

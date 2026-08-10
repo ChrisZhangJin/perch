@@ -2,7 +2,11 @@
 // argv adapter so the runner does not hard-code Claude flags.
 package agent
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+)
 
 // Args is everything the runner passes to an agent. Workdir is informational
 // here (runner sets cmd.Dir). PermMode is required by claude; for nanopi
@@ -36,4 +40,25 @@ func Lookup(name string) (Agent, error) {
 		return a, nil
 	}
 	return Agent{}, fmt.Errorf("unknown AI agent %q (valid: claude, nanopi, pi)", name)
+}
+
+// ErrBinaryNotFound is returned by BinaryPath when the agent name is known
+// but its binary is not on PATH. Wrapped with the agent name and binary
+// path so callers can present a useful hint.
+var ErrBinaryNotFound = errors.New("agent binary not found on PATH")
+
+// BinaryPath resolves name → agent binary path. Returns ErrBinaryNotFound
+// (wrapped) if the binary is not on PATH, or a plain Lookup error if the
+// name itself is unknown. Used by the wizard and the --daemon preflight
+// to fail fast with a clear message before any agent work runs.
+func BinaryPath(name string) (string, error) {
+	a, err := Lookup(name)
+	if err != nil {
+		return "", err
+	}
+	path, err := exec.LookPath(a.Binary)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s (install %s or fix PATH)", ErrBinaryNotFound, a.Binary, a.Binary)
+	}
+	return path, nil
 }
