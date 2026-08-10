@@ -81,26 +81,31 @@ func main() {
 	}
 
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
-	showVersion := flag.Bool("version", false, "print version and exit. Shorthand: -V.")
+	showVersion := flag.Bool("version", false, "print version and exit. Alias: --V.")
 	logLevel := flag.String("log-level", "", "override log_level (debug|info|warn|error). Wins over YAML log_level. Effective for this run only.")
 	daemonMode := flag.Bool("daemon", false,
 		"detach from terminal, write pidfile, exit parent. "+
-			"Logs after this point go to /dev/null until log files land.")
+			"Logs after this point go to /dev/null until log files land. Alias: --D.")
 	flag.BoolVar(daemonMode, "D", false, "alias for --daemon")
 	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
 
-	// Go's flag package accepts both -flag and --flag interchangeably,
-	// but we want only the double-hyphen form for --daemon / -D so
-	// users don't typo `-daemon` and get a confusing error. Reject any
-	// single-hyphen form here.
+	// GNU convention: single-letter flags accept both -x and --x; multi-
+	// letter flags only accept --flag. Go's flag package accepts both
+	// forms for everything; reject single-hyphen forms of any multi-
+	// letter flag here so `-config` doesn't silently work.
 	for _, arg := range os.Args[1:] {
-		if arg == "-daemon" || arg == "-D" {
-			fmt.Fprintf(os.Stderr,
-				"perch: %q requires double-hyphen (use --%s)\n",
-				arg, strings.TrimPrefix(arg, "-"))
-			os.Exit(2)
+		if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+			continue
 		}
+		// arg is "-x" (single letter) or "-foo" (multi letter we reject).
+		name := strings.TrimPrefix(arg, "-")
+		if len(name) == 1 {
+			continue // single-letter flag, both forms OK
+		}
+		fmt.Fprintf(os.Stderr,
+			"perch: %q requires double-hyphen (use --%s)\n", arg, name)
+		os.Exit(2)
 	}
 
 	// --version short-circuits before any config / network work so the
