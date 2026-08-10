@@ -88,3 +88,31 @@ The production-representative test.
   address only). An empty `ALLOW_FROM` denies everyone.
 - **`connection refused` in Level 1** — the container needs host networking
   (`--network host`, as in the demo) for `127.0.0.1` to reach it.
+
+## Daemon mode
+
+The `./perch --daemon` flag re-execs perch detached. The smoke script
+covers the happy path automatically:
+
+```bash
+./scripts/localtest/daemon.sh
+```
+
+For manual verification on a real machine:
+
+1. Launch: `./perch --daemon`. Expected: parent exits 0, prints
+   `perch daemon started, pid N, pidfile /home/.../.perch/perch.pid`.
+2. Verify: `cat ~/.perch/perch.pid` then `kill -0 $(cat ~/.perch/perch.pid)`.
+   Expected: both succeed.
+3. Confirm detachment: close the launching terminal / SSH session.
+   Expected: perch keeps running.
+4. Stop: `kill $(cat ~/.perch/perch.pid)`. Expected: process exits
+   within a second, pidfile disappears.
+5. Stale-pidfile recovery: write a fake pid into the pidfile
+   (`echo 9999999 > ~/.perch/perch.pid`), then launch `--daemon`
+   again. Expected: a WARN line on the parent stderr ("stale pidfile,
+   removing"), then daemonization proceeds normally.
+
+If a real daemon is already running and you try to launch another, the
+parent exits non-zero with "already running" and points at the existing
+pidfile. Do not delete a live daemon's pidfile manually — use SIGTERM.
