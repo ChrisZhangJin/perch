@@ -35,10 +35,6 @@ import (
 var (
 	version = "dev"
 	commit  = "unknown"
-	// pidfilePath is the daemon-mode pidfile location, populated when
-	// --daemon is used. It is package-scope so exitInChild (and any
-	// other early-exit helper) can reach it from anywhere in main().
-	pidfilePath string
 )
 
 // versionString formats the value printed by --version and the startup log.
@@ -58,6 +54,31 @@ func realReadPassword(fd int) ([]byte, error) {
 }
 
 func main() {
+	// pidfilePath is populated in two cases:
+	//   1. We are the daemon child: Daemonize set PERCH_DAEMON_PIDFILE
+	//      in our env, so we read it here. This must happen BEFORE any
+	//      exitInChild call so early exits can clean up the pidfile.
+	//   2. We are the parent running --daemon: set inside the daemon
+	//      handoff block below, then we os.Exit(0) before reaching
+	//      any exitInChild call.
+	var pidfilePath string
+	if env := os.Getenv("PERCH_DAEMON_PIDFILE"); env != "" {
+		pidfilePath = env
+	}
+
+	// exitInChild is a closure capturing pidfilePath. It removes the
+	// daemon pidfile (if we are the daemon child) before exiting. The
+	// child-process check is the env var, not the --daemon flag, because
+	// stripDaemonFlags removes --daemon from the child's argv.
+	exitInChild := func(code int) {
+		if pidfilePath != "" && os.Getenv("PERCH_DAEMON_CHILD") != "" {
+			if err := os.Remove(pidfilePath); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "perch: pidfile remove: %v\n", err)
+			}
+		}
+		os.Exit(code)
+	}
+
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
 	showVersion := flag.Bool("version", false, "print version and exit. Shorthand: -V.")
 	logLevel := flag.String("log-level", "", "override log_level (debug|info|warn|error). Wins over YAML log_level. Effective for this run only.")
@@ -210,18 +231,4 @@ func homeDir() string {
 		return ""
 	}
 	return h
-}
-
-// exitInChild removes the daemon pidfile (if we are the daemon child)
-// before exiting with the given code. This covers the early-exit paths
-// (config load, setup, provider/agent lookup, gate build, mailbox dial)
-// where the pidfile-removal defer registered after signal.NotifyContext
-// has not yet been reached.
-func exitInChild(code int) {
-	if os.Getenv("PERCH_DAEMON_CHILD") != "" {
-		if err := os.Remove(pidfilePath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "perch: pidfile remove: %v\n", err)
-		}
-	}
-	os.Exit(code)
 }

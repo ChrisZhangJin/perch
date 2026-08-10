@@ -86,11 +86,17 @@ func stripDaemonFlags(argv []string) []string {
 // Daemonize returns successfully — the daemon is the child, not the
 // parent. On any error no pidfile is left behind.
 //
-// The child process is marked with the PERCH_DAEMON_CHILD=1 environment
-// variable so the re-execed code path can detect it's the daemon
-// (not the parent that should exit). main.go uses this env var to
-// gate pidfile removal on shutdown — gating on the --daemon flag
-// would not work because stripDaemonFlags removes it from argv.
+// The child process is marked with two environment variables so the
+// re-execed code path can detect it's the daemon and know where the
+// pidfile is:
+//   - PERCH_DAEMON_CHILD=1 signals "you are the daemon child, not the parent"
+//   - PERCH_DAEMON_PIDFILE=<path> provides the pidfile path (the child
+//     has no --daemon flag and no local pidfilePath variable)
+//
+// main.go reads both on startup. The PERCH_DAEMON_PIDFILE env var is
+// critical because the child skips the daemon handoff branch (which
+// sets pidfilePath locally), so without it the child would call
+// os.Remove("") on shutdown, silently failing to clean up the pidfile.
 //
 // preparePidfile runs first: a live existing PID refuses the start,
 // a stale PID is cleaned up. The /dev/null open errors are
@@ -114,7 +120,10 @@ func Daemonize(argv []string, pidfilePath string, log *slog.Logger) (int, error)
 	}
 	child, err := os.StartProcess(self, stripDaemonFlags(argv),
 		&os.ProcAttr{
-			Env:   append(os.Environ(), "PERCH_DAEMON_CHILD=1"),
+			Env: append(os.Environ(),
+				"PERCH_DAEMON_CHILD=1",
+				"PERCH_DAEMON_PIDFILE="+pidfilePath,
+			),
 			Sys:   &syscall.SysProcAttr{Setsid: true},
 			Files: []*os.File{devnull, devnull, devnull},
 		})
