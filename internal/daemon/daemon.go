@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -129,6 +130,15 @@ func Daemonize(argv []string, pidfilePath string, log *slog.Logger) (int, error)
 		})
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrReexecFailed, err)
+	}
+	// Ensure the parent directory exists. The wizard creates ~/.perch
+	// with mode 0700 when it persists the YAML, but a user invoking
+	// --daemon on a fresh install (no YAML yet) has no ~/.perch/.
+	// 0o755 is fine here: the only file in there is the pidfile.
+	if err := os.MkdirAll(filepath.Dir(pidfilePath), 0o755); err != nil {
+		_ = child.Kill()
+		_, _ = child.Wait()
+		return 0, fmt.Errorf("%w: mkdir for pidfile: %v", ErrReexecFailed, err)
 	}
 	if err := os.WriteFile(pidfilePath, []byte(strconv.Itoa(child.Pid)), 0o644); err != nil {
 		// Pidfile write failed after the child has started. Best
