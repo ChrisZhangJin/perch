@@ -55,6 +55,23 @@ func realReadPassword(fd int) ([]byte, error) {
 }
 
 func main() {
+	// Diagnostic stderr redirect for --daemon. When the parent was
+	// invoked with --daemon-stderr <path>, it propagated the path via
+	// PERCH_DAEMON_STDERR; we open that file as our stderr so anything
+	// the child would have written to /dev/null ends up readable.
+	// Must happen BEFORE config load / logger setup / wizard, since
+	// any of those can be the first thing that errors.
+	if stderrPath := os.Getenv("PERCH_DAEMON_STDERR"); stderrPath != "" {
+		f, err := os.OpenFile(stderrPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err == nil {
+			_ = syscall.Dup2(int(f.Fd()), int(os.Stderr.Fd()))
+			_ = f.Close()
+		}
+		// If open fails, we have no stderr to log to — fall through
+		// silently. The user will see an empty debug file, which is
+		// itself useful signal.
+	}
+
 	// pidfilePath is populated in two cases:
 	//   1. We are the daemon child: Daemonize set PERCH_DAEMON_PIDFILE
 	//      in our env, so we read it here. This must happen BEFORE any
@@ -86,6 +103,9 @@ func main() {
 	daemonMode := flag.Bool("daemon", false,
 		"detach from terminal, write pidfile, exit parent. "+
 			"Logs after this point go to /dev/null until log files land. Alias: --D.")
+	daemonStderr := flag.String("daemon-stderr", "",
+		"diagnostic: redirect the daemon child's stderr to this file instead of /dev/null. "+
+			"For debugging why --daemon exits immediately; remove once root-caused.")
 	flag.BoolVar(daemonMode, "D", false, "alias for --daemon")
 	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
@@ -152,7 +172,11 @@ func main() {
 			os.Exit(1)
 		}
 		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
-		childPID, err := daemon.Daemonize(os.Args[0], os.Args[1:], pidfilePath, nil)
+		var daemonExtraEnv []string
+		if *daemonStderr != "" {
+			daemonExtraEnv = append(daemonExtraEnv, "PERCH_DAEMON_STDERR="+*daemonStderr)
+		}
+		childPID, err := daemon.Daemonize(os.Args[0], os.Args[1:], pidfilePath, daemonExtraEnv, nil)
 		if err != nil {
 			switch {
 			case errors.Is(err, daemon.ErrAlreadyRunning):

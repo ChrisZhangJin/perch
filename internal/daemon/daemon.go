@@ -105,7 +105,7 @@ func stripDaemonFlags(argv []string) []string {
 // a stale PID is cleaned up. The /dev/null open errors are
 // propagated. The pidfile is written only after StartProcess
 // succeeds.
-func Daemonize(argv0 string, argv []string, pidfilePath string, log *slog.Logger) (int, error) {
+func Daemonize(argv0 string, argv []string, pidfilePath string, extraEnv []string, log *slog.Logger) (int, error) {
 	if log != nil {
 		log.Info("daemonizing", "pidfile", pidfilePath)
 	}
@@ -138,8 +138,10 @@ func Daemonize(argv0 string, argv []string, pidfilePath string, log *slog.Logger
 	child, err := os.StartProcess(self, stripDaemonFlags(argv),
 		&os.ProcAttr{
 			Env: append(os.Environ(),
-				"PERCH_DAEMON_CHILD=1",
-				"PERCH_DAEMON_PIDFILE="+pidfilePath,
+				append([]string{
+					"PERCH_DAEMON_CHILD=1",
+					"PERCH_DAEMON_PIDFILE=" + pidfilePath,
+				}, extraEnv...)...,
 			),
 			Sys:   &syscall.SysProcAttr{Setsid: true},
 			Files: []*os.File{devnull, devnull, devnull},
