@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/term"
@@ -14,6 +16,7 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/agent"
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
+	"github.com/ChrisZhangJin/perch/internal/daemon"
 	"github.com/ChrisZhangJin/perch/internal/gate"
 	plog "github.com/ChrisZhangJin/perch/internal/log"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
@@ -25,7 +28,9 @@ import (
 )
 
 // version and commit are set at link time via
-//   -ldflags "-X main.version=0.2.0 -X main.commit=abcdef0"
+//
+//	-ldflags "-X main.version=0.2.0 -X main.commit=abcdef0"
+//
 // Defaults match `go run` and local builds without ldflags.
 var (
 	version = "dev"
@@ -52,8 +57,37 @@ func main() {
 	configPath := flag.String("config", "", "path to YAML config file (default: ./perch.yaml, then ~/.perch/perch.yaml). Env: PERCH_CONFIG.")
 	showVersion := flag.Bool("version", false, "print version and exit. Shorthand: -V.")
 	logLevel := flag.String("log-level", "", "override log_level (debug|info|warn|error). Wins over YAML log_level. Effective for this run only.")
+	daemonMode := flag.Bool("daemon", false,
+		"detach from terminal, write pidfile, exit parent. "+
+			"Logs after this point go to /dev/null until log files land.")
+	flag.BoolVar(daemonMode, "D", false, "alias for --daemon")
 	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
+
+	// --daemon handoff: re-exec as a detached child, write pidfile,
+	// exit parent. Must come AFTER flag.Parse but BEFORE --version
+	// so that --daemon --version still prints version (the daemon
+	// handoff only runs if --daemon is given without --version).
+	var pidfilePath string
+	if *daemonMode {
+		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
+		childPID, err := daemon.Daemonize(os.Args[1:], pidfilePath, nil)
+		if err != nil {
+			switch {
+			case errors.Is(err, daemon.ErrAlreadyRunning):
+				fmt.Fprintf(os.Stderr,
+					"perch: already running: see pidfile %s\n", pidfilePath)
+			case errors.Is(err, daemon.ErrReexecFailed):
+				fmt.Fprintf(os.Stderr, "perch: daemonize: %v\n", err)
+			default:
+				fmt.Fprintf(os.Stderr, "perch: daemonize: %v\n", err)
+			}
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr,
+			"perch daemon started, pid %d, pidfile %s\n", childPID, pidfilePath)
+		os.Exit(0)
+	}
 
 	// --version short-circuits before any config / network work so the
 	// flag is useful in scripts and CI without needing a valid config.
@@ -143,10 +177,34 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if *daemonMode {
+		defer func() {
+			if err := os.Remove(pidfilePath); err != nil && !os.IsNotExist(err) {
+				// Best-effort: log to stderr because the logger may
+				// already be torn down by the time defers run, and in
+				// daemon mode stderr is /dev/null anyway. Surface to
+				// the parent's stderr via a fallback line.
+				fmt.Fprintf(os.Stderr, "perch: pidfile remove: %v\n", err)
+			}
+		}()
+	}
+
 	log.Info("watcher started", "email", cfg.Email, "provider", p.Name, "agent", ag.Name, "poll", cfg.PollInterval, "allow_from", cfg.AllowFrom)
 	if err := a.Run(ctx); err != nil {
 		log.Error("run", "err", err)
 		os.Exit(1)
 	}
 	log.Info("watcher stopped")
+}
+
+// homeDir returns the user's home directory or an empty string if
+// it cannot be resolved. Empty means the daemon-mode pidfile path
+// will be relative ("/.perch/perch.pid") which will then fail to
+// write — surfacing the error to the user.
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return h
 }
