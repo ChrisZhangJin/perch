@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -64,4 +65,62 @@ func preparePidfile(path string, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// stripDaemonFlags returns argv with --daemon and -D removed. Used so
+// the re-execed child does not re-enter the daemonization path.
+func stripDaemonFlags(argv []string) []string {
+	out := make([]string, 0, len(argv))
+	for _, a := range argv {
+		if a == "--daemon" || a == "-D" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// Daemonize re-execs the current binary as a detached child, writes
+// the child's PID to pidfilePath, and returns the child PID. argv is
+// os.Args[1:] from the parent. The caller (main) must exit 0 after
+// Daemonize returns successfully — the daemon is the child, not the
+// parent. On any error no pidfile is left behind.
+//
+// preparePidfile runs first: a live existing PID refuses the start,
+// a stale PID is cleaned up. The /dev/null open errors are
+// propagated. The pidfile is written only after StartProcess
+// succeeds.
+func Daemonize(argv []string, pidfilePath string, log *slog.Logger) (int, error) {
+	if log != nil {
+		log.Info("daemonizing", "pidfile", pidfilePath)
+	}
+	if err := preparePidfile(pidfilePath, log); err != nil {
+		return 0, err
+	}
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return 0, fmt.Errorf("%w: open /dev/null: %v", ErrReexecFailed, err)
+	}
+	defer devnull.Close()
+	self, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("%w: locate executable: %v", ErrReexecFailed, err)
+	}
+	child, err := os.StartProcess(self, stripDaemonFlags(argv),
+		&os.ProcAttr{
+			Sys:   &syscall.SysProcAttr{Setsid: true},
+			Files: []*os.File{devnull, devnull, devnull},
+		})
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrReexecFailed, err)
+	}
+	if err := os.WriteFile(pidfilePath, []byte(strconv.Itoa(child.Pid)), 0o644); err != nil {
+		// Pidfile write failed after the child has started. Best
+		// effort: kill the child so we don't leave an unmanaged
+		// daemon running.
+		_ = child.Kill()
+		_, _ = child.Wait()
+		return 0, fmt.Errorf("%w: write pidfile: %v", ErrReexecFailed, err)
+	}
+	return child.Pid, nil
 }

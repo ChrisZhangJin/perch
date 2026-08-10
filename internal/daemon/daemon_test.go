@@ -117,3 +117,34 @@ func TestPreparePidfile_LogsWarningOnStale(t *testing.T) {
 // Ensure the syscall import is exercised even if later refactors drop
 // a test above — keeps go vet happy and documents the dependency.
 var _ = syscall.Kill
+
+func TestStripDaemonFlags(t *testing.T) {
+	cases := []struct {
+		in, want []string
+	}{
+		{[]string{"perch", "--daemon"}, []string{"perch"}},
+		{[]string{"perch", "-D"}, []string{"perch"}},
+		{[]string{"perch", "--daemon", "--config", "/tmp/x"}, []string{"perch", "--config", "/tmp/x"}},
+		{[]string{"perch", "--config", "/tmp/x", "-D"}, []string{"perch", "--config", "/tmp/x"}},
+		{[]string{"perch", "--daemon", "-D"}, []string{"perch"}}, // both forms
+		{[]string{"perch"}, []string{"perch"}},                   // nothing to strip
+	}
+	for _, c := range cases {
+		got := stripDaemonFlags(c.in)
+		if !equalStrings(got, c.want) {
+			t.Errorf("stripDaemonFlags(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
