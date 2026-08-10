@@ -152,7 +152,7 @@ func main() {
 			os.Exit(1)
 		}
 		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
-		childPID, err := daemon.Daemonize(os.Args[1:], pidfilePath, nil)
+		childPID, err := daemon.Daemonize(os.Args[0], os.Args[1:], pidfilePath, nil)
 		if err != nil {
 			switch {
 			case errors.Is(err, daemon.ErrAlreadyRunning):

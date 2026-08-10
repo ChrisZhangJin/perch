@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -82,10 +83,11 @@ func stripDaemonFlags(argv []string) []string {
 }
 
 // Daemonize re-execs the current binary as a detached child, writes
-// the child's PID to pidfilePath, and returns the child PID. argv is
-// os.Args[1:] from the parent. The caller (main) must exit 0 after
-// Daemonize returns successfully — the daemon is the child, not the
-// parent. On any error no pidfile is left behind.
+// the child's PID to pidfilePath, and returns the child PID. argv0
+// is os.Args[0] from the parent (the program name as invoked);
+// argv is os.Args[1:]. The caller (main) must exit 0 after Daemonize
+// returns successfully — the daemon is the child, not the parent.
+// On any error no pidfile is left behind.
 //
 // The child process is marked with two environment variables so the
 // re-execed code path can detect it's the daemon and know where the
@@ -103,7 +105,7 @@ func stripDaemonFlags(argv []string) []string {
 // a stale PID is cleaned up. The /dev/null open errors are
 // propagated. The pidfile is written only after StartProcess
 // succeeds.
-func Daemonize(argv []string, pidfilePath string, log *slog.Logger) (int, error) {
+func Daemonize(argv0 string, argv []string, pidfilePath string, log *slog.Logger) (int, error) {
 	if log != nil {
 		log.Info("daemonizing", "pidfile", pidfilePath)
 	}
@@ -117,7 +119,21 @@ func Daemonize(argv []string, pidfilePath string, log *slog.Logger) (int, error)
 	defer devnull.Close()
 	self, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("%w: locate executable: %v", ErrReexecFailed, err)
+		// Fallback: os.Executable uses readlink(/proc/self/exe), which
+		// returns ENOENT in some environments (kernel without procfs,
+		// chroots with masked /proc, or unlinked-binary situations).
+		// exec.LookPath on argv0 is the standard fallback and works
+		// whenever the binary is reachable through PATH or as a path
+		// relative to the current working directory.
+		if argv0 != "" {
+			if lp, lpErr := exec.LookPath(argv0); lpErr == nil {
+				self = lp
+				err = nil
+			}
+		}
+		if err != nil {
+			return 0, fmt.Errorf("%w: locate executable: %v", ErrReexecFailed, err)
+		}
 	}
 	child, err := os.StartProcess(self, stripDaemonFlags(argv),
 		&os.ProcAttr{
