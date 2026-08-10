@@ -64,10 +64,17 @@ func main() {
 	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
 
+	// --version short-circuits before any config / network work so the
+	// flag is useful in scripts and CI without needing a valid config.
+	// Must come BEFORE the --daemon handoff so that --daemon --version
+	// prints version instead of forking (the handoff os.Exit(0)s).
+	if *showVersion {
+		fmt.Println("perch " + versionString())
+		os.Exit(0)
+	}
+
 	// --daemon handoff: re-exec as a detached child, write pidfile,
-	// exit parent. Must come AFTER flag.Parse but BEFORE --version
-	// so that --daemon --version still prints version (the daemon
-	// handoff only runs if --daemon is given without --version).
+	// exit parent. Must come AFTER flag.Parse and AFTER --version.
 	var pidfilePath string
 	if *daemonMode {
 		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
@@ -86,13 +93,6 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr,
 			"perch daemon started, pid %d, pidfile %s\n", childPID, pidfilePath)
-		os.Exit(0)
-	}
-
-	// --version short-circuits before any config / network work so the
-	// flag is useful in scripts and CI without needing a valid config.
-	if *showVersion {
-		fmt.Println("perch " + versionString())
 		os.Exit(0)
 	}
 
@@ -177,7 +177,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if *daemonMode {
+	if os.Getenv("PERCH_DAEMON_CHILD") != "" {
 		defer func() {
 			if err := os.Remove(pidfilePath); err != nil && !os.IsNotExist(err) {
 				// Best-effort: log to stderr because the logger may
