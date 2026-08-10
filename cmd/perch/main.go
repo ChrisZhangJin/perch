@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -88,6 +89,19 @@ func main() {
 	flag.BoolVar(daemonMode, "D", false, "alias for --daemon")
 	flag.BoolVar(showVersion, "V", false, "alias for --version")
 	flag.Parse()
+
+	// Go's flag package accepts both -flag and --flag interchangeably,
+	// but we want only the double-hyphen form for --daemon / -D so
+	// users don't typo `-daemon` and get a confusing error. Reject any
+	// single-hyphen form here.
+	for _, arg := range os.Args[1:] {
+		if arg == "-daemon" || arg == "-D" {
+			fmt.Fprintf(os.Stderr,
+				"perch: %q requires double-hyphen (use --%s)\n",
+				arg, strings.TrimPrefix(arg, "-"))
+			os.Exit(2)
+		}
+	}
 
 	// --version short-circuits before any config / network work so the
 	// flag is useful in scripts and CI without needing a valid config.
