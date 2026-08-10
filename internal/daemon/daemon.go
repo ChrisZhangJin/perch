@@ -5,6 +5,10 @@ package daemon
 
 import (
 	"errors"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -27,4 +31,37 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return true
+}
+
+// preparePidfile inspects an existing pidfile at path and either
+// refuses to start (live pid), cleans up (stale pid), or proceeds
+// (no file). It does NOT write the new pid — that happens after the
+// re-exec so a failed re-exec leaves no pidfile behind. A nil logger
+// is allowed (warnings are skipped).
+func preparePidfile(path string, log *slog.Logger) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Garbage in the pidfile — treat as stale and clean up.
+		if log != nil {
+			log.Warn("unparseable pidfile, removing", "path", path)
+		}
+		return os.Remove(path)
+	}
+	if processAlive(pid) {
+		return ErrAlreadyRunning
+	}
+	if log != nil {
+		log.Warn("stale pidfile, removing", "path", path, "pid", pid)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
