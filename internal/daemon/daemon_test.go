@@ -48,4 +48,3 @@ func TestProcessAlive_FailClosedOnPermissionError(t *testing.T) {
 // Ensure the syscall import is exercised even if later refactors drop
 // a test above — keeps go vet happy and documents the dependency.
 var _ = syscall.Kill
-
