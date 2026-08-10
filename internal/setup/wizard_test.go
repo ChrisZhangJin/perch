@@ -21,6 +21,38 @@ func interactiveStdin(t *testing.T) {
 	t.Cleanup(func() { isTTYFn = prev })
 }
 
+func TestMissingFieldsWrapper(t *testing.T) {
+	// Empty config: all required fields missing.
+	empty := &config.Config{}
+	got := MissingFields(empty)
+	if len(got) == 0 {
+		t.Fatalf("empty config: expected missing fields, got none")
+	}
+	want := map[string]bool{
+		"email": false, "authcode": false, "provider.name": false,
+		"agent.name": false, "agent.workdir": false,
+		"agent.permission_mode": false, "log_level": false,
+	}
+	for _, f := range got {
+		want[f] = true
+	}
+	for f, seen := range want {
+		if !seen {
+			t.Errorf("empty config: expected %q in missing list", f)
+		}
+	}
+
+	// Fully populated: empty list (AllowFrom omitted by design).
+	full := &config.Config{
+		Email: "a@163.com", AuthCode: "x",
+		ProviderName: "163", AgentName: "claude",
+		AgentWorkdir: ".", AgentPermMode: "plan", LogLevel: "info",
+	}
+	if got := MissingFields(full); len(got) != 0 {
+		t.Fatalf("full config: expected no missing, got %v", got)
+	}
+}
+
 func TestEnsureSilentWhenComplete(t *testing.T) {
 	cfg := &config.Config{
 		Email:         "agent@163.com",

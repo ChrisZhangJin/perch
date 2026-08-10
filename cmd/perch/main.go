@@ -120,6 +120,27 @@ func main() {
 	// --daemon handoff: re-exec as a detached child, write pidfile,
 	// exit parent. Must come AFTER flag.Parse and AFTER --version.
 	if *daemonMode {
+		// Refuse if config is not populated enough to run unattended. The
+		// child runs with stdio on /dev/null, so the wizard can't prompt
+		// there — catch the gap here while the parent still has a real
+		// stdin. We only Load() (no wizard), because the wizard would
+		// silently print the non-TTY hint and exit 2 — confusing in a
+		// daemon context. The user should run `./perch` first (no flag)
+		// to fill the wizard interactively, then re-run with --daemon.
+		preCfg, preErr := config.Load(*configPath)
+		if preErr != nil {
+			fmt.Fprintf(os.Stderr, "perch: daemon: config: %v\n", preErr)
+			fmt.Fprintln(os.Stderr, "hint: run `./perch` (no flag) to set up, then re-run with --daemon.")
+			os.Exit(1)
+		}
+		if missing := setup.MissingFields(preCfg); len(missing) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"perch: daemon: refusing to start — required fields not set: %s\n",
+				strings.Join(missing, ", "))
+			fmt.Fprintln(os.Stderr,
+				"hint: run `./perch` (no flag) once interactively to fill the wizard, then re-run with --daemon.")
+			os.Exit(2)
+		}
 		pidfilePath = filepath.Join(homeDir(), ".perch", "perch.pid")
 		childPID, err := daemon.Daemonize(os.Args[1:], pidfilePath, nil)
 		if err != nil {

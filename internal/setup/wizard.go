@@ -45,6 +45,13 @@ func Ensure(cfg *config.Config, stdin io.Reader, stdout io.Writer, stderr io.Wri
 	return runWizard(cfg, stdin, stdout, pw)
 }
 
+// MissingFields returns the cfg field names that still need to be populated.
+// Exported so callers (e.g. --daemon) can refuse to start before any wizard
+// work runs, without going through Ensure and its TTY-driven hint output.
+func MissingFields(cfg *config.Config) []string {
+	return missingFields(cfg)
+}
+
 // missingFields returns the cfg field names that still need to be populated.
 // AllowFrom is intentionally NOT here — the wizard prompts for it on
 // interactive first run and persists it to the YAML file, but for
