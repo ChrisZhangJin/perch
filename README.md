@@ -170,6 +170,24 @@ AGENT_AUTH_CODE=xxxxxxxx
 Without `AGENT_AUTH_CODE` set, a non-interactive run exits with a hint pointing
 back at the wizard or the env file.
 
+### Running detached (`--daemon`)
+
+If you don't want to write a systemd/launchd unit, `./perch --daemon`
+re-execs itself as a detached process: it breaks the link to your
+controlling terminal (so closing the SSH session won't SIGHUP it) and
+writes its PID to `~/.perch/perch.pid`. To stop it, send SIGTERM to
+the recorded PID (or `pkill -TERM perch`). The pidfile is removed on
+clean shutdown; a stale pidfile is detected and cleaned up on the next
+launch.
+
+```bash
+./perch --daemon           # alias: -D
+kill $(cat ~/.perch/perch.pid)
+```
+
+In daemon mode, all post-handoff logs go to `/dev/null` — there is no
+log file yet. A log-file option with rotation is on the roadmap.
+
 **Tip:** keep the auth code in a gitignored file (the repo ships one called `grant.code`)
 rather than typing it on the command line:
 

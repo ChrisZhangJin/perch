@@ -159,6 +159,22 @@ AGENT_AUTH_CODE=你的授权码
 
 如果没设 `AGENT_AUTH_CODE` 就以非交互模式启动,perch 会输出提示并退出,告诉你该跑向导或写 env 文件。
 
+### 后台运行(`--daemon`)
+
+不想写 systemd/launchd unit 的话,`./perch --daemon` 会把自身重新派生为
+一个脱离终端的进程:切断与控制终端的关联(关闭 SSH 也不会被 SIGHUP),
+并把 PID 写到 `~/.perch/perch.pid`。停止时给记录的 PID 发 SIGTERM
+(或 `pkill -TERM perch`)即可。正常退出时 pidfile 会被自动删除;
+下次启动如果发现是残留 pidfile 也会自动清理。
+
+```bash
+./perch --daemon           # 别名:-D
+kill $(cat ~/.perch/perch.pid)
+```
+
+daemon 模式下,交接完成后的所有日志都写到 `/dev/null`——暂时还没有日志
+文件。带 rotation 的日志文件在 roadmap 里。
+
 **小贴士:** 把授权码放在一个 gitignore 的文件里(仓库自带 `grant.code`),别每次输:
 
 ```bash
