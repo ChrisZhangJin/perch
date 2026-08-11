@@ -438,6 +438,33 @@ func TestBuildPromptGreetingFallback(t *testing.T) {
 	}
 }
 
+// TestBuildPromptEnforcesGreetingProtocol pins the new hard contract: the
+// prompt must list the canonical greeting forms, name the rule as a hard
+// contract, and tell the agent that pre-greeting content is silently
+// dropped by perch on receipt. This is the prompt-side of the greeting
+// protocol — the parser-side enforcement lives in internal/app/greeting.go
+// (TestExtractBodyAfterGreeting_*).
+//
+// Regression for the 2026-08-11 incident where the agent did an audit,
+// wrote a "Memory Audit Report" preamble, then a greeting, then the
+// verdict — only the verdict (well, only the greeting-onwards) should
+// reach the human.
+func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com")
+	must := []string{
+		"GREETING PROTOCOL",
+		"Hi <name>,",
+		"Hi there,",
+		"Good morning,",
+		"silently discarded",
+	}
+	for _, s := range must {
+		if !strings.Contains(p, s) {
+			t.Errorf("prompt must contain %q, got:\n%s", s, p)
+		}
+	}
+}
+
 // TestAgentDisplayName verifies the sign-off name derivation. The perp
 // convention is agent_<name>@<domain>; the helper strips the agent_
 // prefix and returns the rest. Other addresses fall through unchanged.

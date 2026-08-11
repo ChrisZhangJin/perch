@@ -146,7 +146,21 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if err != nil {
 			a.log.Warn("reply file collect failed", "err", err)
 		}
-		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), out, files); err != nil {
+		// Greeting protocol: the agent must open its reply with a salutation
+		// line (Hi/Hello/Hey + name, Hi there, or Good morning/afternoon/
+		// evening). Anything written before the greeting — audit reports,
+		// classification narratives, tool-call notes — is silently dropped
+		// here and never reaches the human. This is enforced as a hard
+		// contract on both sides: the prompt in BuildPrompt tells the
+		// agent that pre-greeting content will be discarded (so it
+		// doesn't waste tokens on it), and this scanner enforces it on
+		// receipt.
+		greeted, gerr := ExtractBodyAfterGreeting(out, m.FromName)
+		if gerr != nil {
+			a.log.Warn("agent stdout missing greeting; sending as-is",
+				"from", m.From, "subject", m.Subject, "preview", preview(out))
+		}
+		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), greeted, files); err != nil {
 			a.log.Error("reply failed", "from", m.From, "err", err)
 			a.notifyReplyFailure(m, out, files, err)
 			continue // leave unseen so a later poll retries the reply

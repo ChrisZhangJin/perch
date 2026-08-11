@@ -16,8 +16,10 @@ aamp-watcher-sessions.json
 *.swp
 *.swo
 
-# local secret (163 auth code)
+# local secret (mailbox auth codes)
 grant.code
+*.grant_code
+*_grant.code
 
 # worktrees
 /.worktrees/

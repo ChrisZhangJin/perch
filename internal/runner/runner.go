@@ -175,7 +175,10 @@ func BuildPrompt(from, fromName, subject, body string, attachments []string, rep
 	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
 	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
 	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n")
-	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\n%s\"). The body is the email itself, not a chat transcript.\n\n", greeting, name)
+	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\n%s\"). The body is the email itself, not a chat transcript.\n", greeting, name)
+	b.WriteString("- GREETING PROTOCOL (hard contract): your reply MUST begin with exactly one greeting line, on its own line, matching one of these forms:\n")
+	b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hey <name>,\n    Hi there,\n    Good morning,\n    Good afternoon,\n    Good evening,\n")
+	b.WriteString("  where <name> is the sender's display name or the email local-part (e.g. \"Hi Chris,\"). Anything you write BEFORE this greeting line is silently discarded by perch on receipt — audit reports, classification narratives, \"Let me check...\", tool-call summaries, internal reasoning, all of it is dropped. Do not waste tokens on it. The greeting line is the first thing the human sees in your reply.\n\n")
 	b.WriteString("Task:\n")
 	b.WriteString(body)
 	if len(attachments) > 0 {

@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
-// withCleanEnv clears every perch env var so tests don't leak between cases.
+// withCleanEnv clears every perch env var so tests don't leak between cases,
+// and redirects HOME to a fresh tmp dir so the default-search path
+// (~/.perch/perch.yaml) never picks up a real wizard-written file on the
+// developer's machine. Without the HOME override, TestLogLevelDefault
+// (and any other "no YAML present" test) reads the operator's real
+// ~/.perch/perch.yaml and asserts the wrong thing.
 func withCleanEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
@@ -19,6 +24,7 @@ func withCleanEnv(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
+	t.Setenv("HOME", t.TempDir())
 }
 
 func TestLoadReadsEnvAndDefaults(t *testing.T) {
