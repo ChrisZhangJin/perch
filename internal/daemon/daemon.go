@@ -1,6 +1,9 @@
 // Package daemon implements perch's --daemon mode: re-exec the binary
 // detached from the controlling terminal, write the child PID to a
-// pidfile, and refuse to start if a live PID is already recorded.
+// pidfile, and refuse to start if any pidfile is already recorded
+// (live or stale). Stale pidfiles must be removed by the operator —
+// auto-removal would mask a dying daemon that the user needs to
+// investigate.
 package daemon
 
 import (
@@ -13,12 +16,22 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var (
 	ErrAlreadyRunning = errors.New("daemon already running")
+	ErrStalePidfile   = errors.New("stale pidfile present")
 	ErrReexecFailed   = errors.New("daemonize re-exec failed")
 )
+
+// verifyGrace is how long Daemonize waits after writing the pidfile
+// before checking the child is still alive. The child needs a moment
+// to read config and set up logging; a sub-second failure window is
+// plausible. 300 ms catches immediate crash without slowing normal
+// startups noticeably. Not configurable — keep the daemon handoff
+// hermetic.
+const verifyGrace = 300 * time.Millisecond
 
 // processAlive reports whether pid is a running process. It uses
 // kill(pid, 0) which performs the check without sending a signal.
@@ -37,10 +50,14 @@ func processAlive(pid int) bool {
 }
 
 // preparePidfile inspects an existing pidfile at path and either
-// refuses to start (live pid), cleans up (stale pid), or proceeds
-// (no file). It does NOT write the new pid — that happens after the
-// re-exec so a failed re-exec leaves no pidfile behind. A nil logger
-// is allowed (warnings are skipped).
+// refuses to start (live pid) or refuses to start (stale pid or
+// unparseable content). It does NOT remove the existing pidfile and
+// does NOT write the new pid — that happens after the re-exec so a
+// failed re-exec leaves no pidfile behind. The defensive refusal
+// (vs. silent cleanup of stale pidfiles) means an operator with a
+// dying daemon must inspect and remove the file manually; auto-
+// cleanup would mask the symptom. A nil logger is allowed (warnings
+// are skipped).
 func preparePidfile(path string, log *slog.Logger) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -51,22 +68,20 @@ func preparePidfile(path string, log *slog.Logger) error {
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		// Garbage in the pidfile — treat as stale and clean up.
+		// Garbage in the pidfile — refuse; do not auto-remove.
 		if log != nil {
-			log.Warn("unparseable pidfile, removing", "path", path)
+			log.Warn("unparseable pidfile; refusing to start", "path", path)
 		}
-		return os.Remove(path)
+		return ErrStalePidfile
 	}
 	if processAlive(pid) {
 		return ErrAlreadyRunning
 	}
 	if log != nil {
-		log.Warn("stale pidfile, removing", "path", path, "pid", pid)
+		log.Warn("stale pidfile present; refusing to start",
+			"path", path, "pid", pid)
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return ErrStalePidfile
 }
 
 // stripDaemonFlags returns argv with --daemon and -D removed. Used so
@@ -101,10 +116,12 @@ func stripDaemonFlags(argv []string) []string {
 // sets pidfilePath locally), so without it the child would call
 // os.Remove("") on shutdown, silently failing to clean up the pidfile.
 //
-// preparePidfile runs first: a live existing PID refuses the start,
-// a stale PID is cleaned up. The /dev/null open errors are
-// propagated. The pidfile is written only after StartProcess
-// succeeds.
+// preparePidfile runs first: an existing pidfile (live or stale)
+// refuses the start. The /dev/null open errors are propagated. The
+// pidfile is written only after StartProcess succeeds, and after
+// that a short grace window re-checks the child is still alive so
+// a crash during its first config/logger setup leaves the parent
+// with a meaningful error instead of a stale pidfile.
 func Daemonize(argv0 string, argv []string, pidfilePath string, extraEnv []string, log *slog.Logger) (int, error) {
 	if log != nil {
 		log.Info("daemonizing", "pidfile", pidfilePath)
@@ -165,6 +182,19 @@ func Daemonize(argv0 string, argv []string, pidfilePath string, extraEnv []strin
 		_ = child.Kill()
 		_, _ = child.Wait()
 		return 0, fmt.Errorf("%w: write pidfile: %v", ErrReexecFailed, err)
+	}
+	// Verify the child actually stayed up long enough to take over.
+	// The child reads config and sets up logging before servicing
+	// mail, so a sub-second failure window is plausible; verifyGrace
+	// is enough to catch immediate crash without slowing normal
+	// startups noticeably. If we don't see it alive after the
+	// grace, the pidfile points at a dead process — clean up so
+	// the operator's next --daemon attempt sees a clean slate.
+	time.Sleep(verifyGrace)
+	if !processAlive(child.Pid) {
+		_ = os.Remove(pidfilePath)
+		return 0, fmt.Errorf("%w: child process %d died after start",
+			ErrReexecFailed, child.Pid)
 	}
 	return child.Pid, nil
 }

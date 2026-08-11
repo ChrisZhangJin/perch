@@ -16,6 +16,9 @@ func TestSentinelErrors(t *testing.T) {
 	if ErrAlreadyRunning == nil {
 		t.Fatal("ErrAlreadyRunning must be non-nil")
 	}
+	if ErrStalePidfile == nil {
+		t.Fatal("ErrStalePidfile must be non-nil")
+	}
 	if ErrReexecFailed == nil {
 		t.Fatal("ErrReexecFailed must be non-nil")
 	}
@@ -76,27 +79,33 @@ func TestPreparePidfile_LivePID_Refuses(t *testing.T) {
 	}
 }
 
-func TestPreparePidfile_StalePID_CleansUp(t *testing.T) {
+func TestPreparePidfile_StalePID_Refuses(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "perch.pid")
 	// A pid that is almost certainly dead. Use 1 (init) only if it
 	// returns ESRCH on this kernel; otherwise use a synthetic pid.
 	dead := 999_999_99
 	if processAlive(dead) {
-		t.Skip("synthetic dead pid was reported alive; cannot test stale cleanup")
+		t.Skip("synthetic dead pid was reported alive; cannot test stale refusal")
 	}
 	if err := os.WriteFile(pf, []byte(strconv.Itoa(dead)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparePidfile(pf, nil); err != nil {
-		t.Fatalf("stale pidfile cleanup should not error: %v", err)
+	err := preparePidfile(pf, nil)
+	if !errors.Is(err, ErrStalePidfile) {
+		t.Fatalf("expected ErrStalePidfile, got %v", err)
 	}
-	if _, err := os.Stat(pf); !os.IsNotExist(err) {
-		t.Fatalf("stale pidfile was not removed: stat err=%v", err)
+	// Pidfile must NOT have been removed — the operator inspects/removes it.
+	if _, err := os.Stat(pf); err != nil {
+		t.Fatalf("stale pidfile was removed (should be left for operator): %v", err)
+	}
+	b, _ := os.ReadFile(pf)
+	if string(b) != strconv.Itoa(dead) {
+		t.Fatalf("stale pidfile contents changed: %q", b)
 	}
 }
 
-func TestPreparePidfile_LogsWarningOnStale(t *testing.T) {
+func TestPreparePidfile_StalePID_LogsWarning(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "perch.pid")
 	dead := 999_999_99
@@ -106,11 +115,31 @@ func TestPreparePidfile_LogsWarningOnStale(t *testing.T) {
 	_ = os.WriteFile(pf, []byte(strconv.Itoa(dead)), 0o644)
 	var buf strings.Builder
 	log := slog.New(slog.NewTextHandler(io.Writer(&buf), nil))
-	if err := preparePidfile(pf, log); err != nil {
+	// preparePidfile now returns ErrStalePidfile on stale pidfile —
+	// we ignore the error here, only the warning text matters.
+	_ = preparePidfile(pf, log)
+	out := buf.String()
+	if !strings.Contains(out, "stale pidfile") {
+		t.Fatalf("expected warn log about stale pidfile, got %q", out)
+	}
+	// We are NOT removing — make sure the warning does not lie.
+	if strings.Contains(out, "removing") {
+		t.Fatalf("warning should not say 'removing' (we are refusing, not removing): %q", out)
+	}
+}
+
+func TestPreparePidfile_Unparseable_Refuses(t *testing.T) {
+	dir := t.TempDir()
+	pf := filepath.Join(dir, "perch.pid")
+	if err := os.WriteFile(pf, []byte("not a pid\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "stale pidfile") {
-		t.Fatalf("expected warn log about stale pidfile, got %q", buf.String())
+	err := preparePidfile(pf, nil)
+	if !errors.Is(err, ErrStalePidfile) {
+		t.Fatalf("expected ErrStalePidfile, got %v", err)
+	}
+	if _, err := os.Stat(pf); err != nil {
+		t.Fatalf("unparseable pidfile was removed: %v", err)
 	}
 }
 

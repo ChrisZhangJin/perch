@@ -57,9 +57,12 @@ When `--daemon` is **not** set, behavior is unchanged.
   path so users can find it.
 - **Removed by:** the child, in a `defer` in `main()` after the signal
   context is cancelled, before the final log line.
-- **Stale cleanup:** if the pidfile exists and the recorded PID is not
+- **Stale refusal:** if the pidfile exists and the recorded PID is not
   alive (probe via `syscall.Kill(pid, 0)` returns `ESRCH`), the parent
-  logs a WARN, removes the file, and proceeds with daemonization.
+  logs a WARN, refuses to start, and instructs the operator to inspect
+  and remove the file manually. The pidfile is **not** touched —
+  auto-remove would mask a dying daemon that the user needs to
+  investigate.
 - **Live refusal:** if the pidfile exists and the recorded PID **is**
   alive, the parent prints an ERROR and exits 1. The pidfile is **not**
   touched.
@@ -164,7 +167,7 @@ any other package.
 | Test | Asserts |
 |---|---|
 | `TestStripDaemonFlag` | `--daemon` and `-D` removed from a sample argv; other flags preserved |
-| `TestStalePidfileRemoved` | pidfile with a known-dead PID is removed during daemonization prep; daemonization still proceeds |
+| `TestStalePidfileRefused` | pidfile with a known-dead PID → `Daemonize` returns `ErrStalePidfile`; pidfile is **not** removed (operator must inspect) |
 | `TestLivePidRefusesStart` | pidfile with an alive PID (current process) → `Daemonize` returns `ErrAlreadyRunning`; pidfile unchanged |
 | `TestReexecFailureLeavesNoPidfile` | injected re-exec error → pidfile does not exist on disk afterwards |
 | `TestProcessAlive_UnknownError` | `processAlive` on a PID where `kill` returns EPERM returns true (fail-closed) |

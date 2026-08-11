@@ -182,6 +182,12 @@ func main() {
 			case errors.Is(err, daemon.ErrAlreadyRunning):
 				fmt.Fprintf(os.Stderr,
 					"perch: already running: see pidfile %s\n", pidfilePath)
+			case errors.Is(err, daemon.ErrStalePidfile):
+				fmt.Fprintf(os.Stderr,
+					"perch: pidfile %s references a dead process — refusing to auto-remove.\n"+
+						"Inspect with: cat %s\n"+
+						"Remove with: rm %s\n",
+					pidfilePath, pidfilePath, pidfilePath)
 			case errors.Is(err, daemon.ErrReexecFailed):
 				fmt.Fprintf(os.Stderr, "perch: daemonize: %v\n", err)
 			default:
