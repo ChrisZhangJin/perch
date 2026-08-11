@@ -121,7 +121,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
 
-		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir)
+		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir, a.cfg.Email)
 		out, nativeID, err := a.run.Run(ctx, prompt, sid, isNew)
 		if err != nil {
 			a.log.Error("agent run failed", "from", m.From, "err", err)

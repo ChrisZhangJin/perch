@@ -115,6 +115,31 @@ func readSessionHeaderID(path string) string {
 	return ""
 }
 
+// agentDisplayName derives a human-readable name from the agent's email
+// for the sign-off template. For "agent_phillip@163.com" it returns
+// "phillip"; for "agent_tommy@163.com" it returns "tommy". Names are
+// raw lowercase (no capitalization). Falls back to the original local-
+// part when the address doesn't start with the agent_ prefix, and to
+// "there" on empty input or on "" after the agent_ prefix strip.
+func agentDisplayName(email string) string {
+	at := strings.LastIndex(email, "@")
+	local := email
+	if at >= 0 {
+		local = email[:at]
+	}
+	local = strings.TrimSpace(local)
+	if local == "" {
+		return "there"
+	}
+	// agent_ prefix is the perch convention; strip it but only if there's
+	// something meaningful left. agent_@... (empty after strip) keeps the
+	// original local-part so the sign-off doesn't read like "Best,\n".
+	if rest, ok := strings.CutPrefix(local, "agent_"); ok && rest != "" {
+		return rest
+	}
+	return local
+}
+
 // BuildPrompt frames an email as a task prompt for the agent, listing any
 // inbound attachments already saved to disk and the outbound reply/ staging
 // directory the agent should write files into.
@@ -122,29 +147,35 @@ func readSessionHeaderID(path string) string {
 // The framing is deliberate: this is an EMAIL reply, not a CLI session.
 // The agent's stdout becomes the email body verbatim, so the model must
 // (a) skip the internal-monologue preamble that CLI agents default to
-// ("Let me first check..."), (b) not narrate tool calls, (c) keep the
-// final answer short and direct, and (d) write a polite email reply with
-// a greeting and sign-off — agents defaulting to a terse CLI tone come
-// across as rude to a human recipient. fromName is the sender's display
-// name from the From header ("Chris"); when non-empty it's used in the
-// salutation ("Hi Chris,"), and the sign-off defaults to "Best,\nTommy".
-// Files the agent writes into replyDir are attached to the reply
-// automatically; the body should be a one-line caption, not a transcript
-// of the work.
-func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir string) string {
+// ("Let me first check..."), (b) not narrate tool calls, (c) not write
+// internal-reasoning summaries ("I'll start by...", "Now I have..."),
+// (d) keep the final answer short and direct, and (e) write a polite
+// email reply with a greeting and sign-off — agents defaulting to a
+// terse CLI tone come across as rude to a human recipient. fromName is
+// the sender's display name from the From header ("Chris"); when non-
+// empty it's used in the salutation ("Hi Chris,"). The sign-off derives
+// the agent's own name from agentEmail via agentDisplayName so the
+// reply email ends with "Best,\n<local-part>" matching the agent's
+// mailbox. Files the agent writes into replyDir are attached to the
+// reply automatically; the body should be a one-line caption, not a
+// transcript of the work.
+func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir, agentEmail string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q). Your entire stdout will be sent back to them as the body of the reply email — there is no follow-up turn to read intermediate output.\n\n", from, subject)
-	b.WriteString("Reply rules:\n")
-	b.WriteString("- Be concise. Lead with the answer or result, not a plan.\n")
-	b.WriteString("- Do NOT narrate tool calls. Do NOT write phrases like \"Let me check...\", \"I see that...\", \"First I'll...\". The user does not see your reasoning; they only see your final text.\n")
-	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
-	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
-	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n")
+	name := agentDisplayName(agentEmail)
 	greeting := "Hi"
 	if fromName != "" {
 		greeting = "Hi " + fromName + ","
 	}
-	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\nTommy\"). The body is the email itself, not a chat transcript.\n\n", greeting)
+	b.WriteString("Reply rules:\n")
+	b.WriteString("- Be concise. Lead with the answer or result, not a plan.\n")
+	b.WriteString("- Do NOT narrate tool calls. Do NOT write phrases like \"Let me check...\", \"I see that...\", \"First I'll...\". The user does not see your reasoning; they only see your final text.\n")
+	b.WriteString("- Do NOT write internal-reasoning summaries either. Phrases like \"I'll start by...\", \"Now I have...\", \"I need to check...\", \"Both files exist but...\" must stay in your head and NEVER appear on stdout. The screenshot regression we are guarding against looked exactly like this — the agent's reasoning leaked into the email body and the human reader never wanted to see it.\n")
+	b.WriteString("- ZERO-thought rule: your stdout is the OUTPUT of the work, not the WORK ITSELF. If the answer is a short result, emit the result. If the answer requires walking through steps, write the polished steps — not your discoveries along the way.\n")
+	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
+	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
+	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n")
+	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\n%s\"). The body is the email itself, not a chat transcript.\n\n", greeting, name)
 	b.WriteString("Task:\n")
 	b.WriteString(body)
 	if len(attachments) > 0 {

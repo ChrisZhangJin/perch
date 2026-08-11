@@ -27,14 +27,14 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com")
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
 	}
 }
 
 func TestBuildPromptAttachmentHints(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com")
 	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -47,7 +47,7 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 // of replying. Regression for the screenshot incident where the agent
 // wrote "I'll help you respond to Chris's email" as the reply.
 func TestBuildPromptMentionsEmailBody(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
 	for _, want := range []string{
 		"email",
 		"stdout",
@@ -65,8 +65,13 @@ func TestBuildPromptMentionsEmailBody(t *testing.T) {
 // rule in the prompt so a future edit can't quietly drop it. The rule
 // names the exact phrases the screenshot regression hit ("let me check",
 // "i will respond", etc.) — those phrases must appear in a "do NOT" rule.
+// Also pins the ZERO-thought rule (output of the work, not the work
+// itself) and the explicit ban on internal-reasoning summaries ("I'll
+// start by...", "Now I have...") — the second screenshot regression.
+// Without these, the model defaults to writing its scratchpad into
+// stdout and the email recipient reads the agent's thinking.
 func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "do not narrate") {
 		t.Errorf("prompt must contain a 'do not narrate' rule, got:\n%s", p)
@@ -81,6 +86,24 @@ func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
 	}
 	if !hit {
 		t.Errorf("prompt should name a regression phrase ('let me check' or 'i will respond') as forbidden, got:\n%s", p)
+	}
+	// ZERO-thought rule — the second-screenshot fix. Without this, the
+	// model writes reasoning summaries ("I'll start by...", "Now I have...")
+	// into stdout and the human reads them as the agent's reply.
+	if !strings.Contains(low, "zero-thought") {
+		t.Errorf("prompt must contain the 'zero-thought' rule (output of the work, not the work itself), got:\n%s", p)
+	}
+	// Internal-reasoning ban — at least one of the screenshot phrases
+	// must be named as forbidden so a future edit can't quietly drop it.
+	hit = false
+	for _, phrase := range []string{"i'll start by", "now i have", "i need to check"} {
+		if strings.Contains(low, phrase) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Errorf("prompt should name an internal-reasoning phrase ('i'll start by' or 'now i have') as forbidden, got:\n%s", p)
 	}
 }
 
@@ -376,14 +399,32 @@ func TestRunClaudeResumeDoesNotFallback(t *testing.T) {
 // terse CLI tone and the email recipient reads it as rude. Regression for
 // the 2026-08-09 screenshot where the agent replied with no greeting and
 // no sign-off.
+//
+// The sign-off derives the agent's name from the agent's own email
+// (cfg.Email). For agent_tommy@163.com → "tommy"; for agent_phillip@163.com
+// → "phillip". The sign-off name must MATCH the agent's mailbox — the
+// hardcoded "Tommy" in the old prompt was wrong when the agent ran on a
+// different mailbox.
 func TestBuildPromptIncludesGreeting(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "")
+	// Default case: agent owns agent_tommy@163.com.
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com")
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "hi chris") {
 		t.Errorf("prompt should instruct greeting using fromName=Chris, got:\n%s", p)
 	}
-	if !strings.Contains(p, "Tommy") {
-		t.Errorf("prompt should include sign-off name 'Tommy', got:\n%s", p)
+	if !strings.Contains(p, "Best,\\ntommy") {
+		t.Errorf("prompt should sign off with derived name 'tommy' for agent_tommy@163.com, got:\n%s", p)
+	}
+	// Cross-check: when the agent's mailbox is agent_phillip@163.com the
+	// sign-off must use "phillip" and must NOT contain "tommy". This is
+	// the regression the user reported: agent on phillip's mailbox was
+	// signing off as "Tommy" because the prompt hardcoded the name.
+	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com")
+	if !strings.Contains(p2, "Best,\\nphillip") {
+		t.Errorf("prompt should sign off with derived name 'phillip' for agent_phillip@163.com, got:\n%s", p2)
+	}
+	if strings.Contains(p2, "tommy") {
+		t.Errorf("prompt for agent_phillip@163.com must not mention 'tommy', got:\n%s", p2)
 	}
 }
 
@@ -391,9 +432,33 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 // list, automated sender): the salutation guidance should still be there,
 // just without a specific name to drop in.
 func TestBuildPromptGreetingFallback(t *testing.T) {
-	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "")
+	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com")
 	if !strings.Contains(p, "polite salutation") {
 		t.Errorf("prompt should still mention politeness when fromName is empty, got:\n%s", p)
+	}
+}
+
+// TestAgentDisplayName verifies the sign-off name derivation. The perp
+// convention is agent_<name>@<domain>; the helper strips the agent_
+// prefix and returns the rest. Other addresses fall through unchanged.
+// Empty / malformed input falls back to "there" so the prompt never
+// produces a literal "Best,\n" with nothing after.
+func TestAgentDisplayName(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"agent_tommy@163.com", "tommy"},
+		{"agent_phillip@163.com", "phillip"},
+		{"alice@163.com", "alice"},
+		{"agent_@163.com", "agent_"}, // empty after strip → keep original
+		{"", "there"},
+		{"   ", "there"},
+		{"noatsign", "noatsign"},
+	}
+	for _, c := range cases {
+		if got := agentDisplayName(c.in); got != c.want {
+			t.Errorf("agentDisplayName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
