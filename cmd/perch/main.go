@@ -62,14 +62,11 @@ func main() {
 	// Must happen BEFORE config load / logger setup / wizard, since
 	// any of those can be the first thing that errors.
 	if stderrPath := os.Getenv("PERCH_DAEMON_STDERR"); stderrPath != "" {
-		f, err := os.OpenFile(stderrPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-		if err == nil {
-			_ = syscall.Dup2(int(f.Fd()), int(os.Stderr.Fd()))
-			_ = f.Close()
-		}
-		// If open fails, we have no stderr to log to — fall through
-		// silently. The user will see an empty debug file, which is
-		// itself useful signal.
+		_ = daemon.RedirectStderr(stderrPath)
+		// If redirect fails (open error, dup3 error, or building on a
+		// platform where --daemon-stderr is a no-op), we have no stderr
+		// to log to — fall through silently. The user will see an
+		// empty debug file, which is itself useful signal.
 	}
 
 	// pidfilePath is populated in two cases:

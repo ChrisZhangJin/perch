@@ -1,9 +1,16 @@
+//go:build linux
+
 // Package daemon implements perch's --daemon mode: re-exec the binary
 // detached from the controlling terminal, write the child PID to a
 // pidfile, and refuse to start if any pidfile is already recorded
 // (live or stale). Stale pidfiles must be removed by the operator —
 // auto-removal would mask a dying daemon that the user needs to
 // investigate.
+//
+// This file is Linux-only. Daemon semantics (setsid, /proc/self/exe,
+// SIGKILL by pid) are POSIX-with-Linux-specifics; the daemon path is
+// not offered on darwin/windows. See daemon_stub.go for the fallback
+// stubs on non-Linux platforms.
 package daemon
 
 import (
