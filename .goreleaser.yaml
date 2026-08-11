@@ -54,7 +54,6 @@ archives:
       - README.md
       - README.zh-CN.md
       - LICENSE
-      - perch.yaml
       - perch.yaml.example
       - docs/**
 
