@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/gate"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/message"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 	"github.com/ChrisZhangJin/perch/internal/runner"
 	"github.com/ChrisZhangJin/perch/internal/session"
 )
@@ -121,6 +123,34 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
 
+		// Duration probe: ask the agent (in a throwaway, fresh session) whether
+		// this task will run long. If long, send an interim ack email so the
+		// human isn't left wondering while the real run works. Classifier
+		// errors are logged and swallowed — a bad probe must never block the
+		// real reply.
+		//
+		// The probe uses IsNew=true with sessionID="" so it never pollutes the
+		// thread's actual session; agents that persist state (nanopi) will
+		// mint a throwaway session id we deliberately drop on the floor.
+		classifyPrompt := BuildClassifyPrompt(m.From, m.Subject, m.Body)
+		classifyOut, _, cerr := a.run.Run(ctx, classifyPrompt, "", true)
+		if cerr != nil {
+			a.log.Warn("classifier run failed; skipping ack path",
+				"from", m.From, "err", cerr)
+		} else {
+			runtime, etaMin := ParseClassifyOutput(classifyOut)
+			a.log.Info("task classified",
+				"from", m.From, "runtime", runtime, "eta_min", etaMin)
+			if runtime == "long" {
+				ack := BuildLongAckBody(m.FromName, etaMin)
+				if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
+					appendRef(m.References, m.MessageID), ack, nil); err != nil {
+					a.log.Warn("long-task ack send failed; continuing to run task",
+						"from", m.From, "err", err)
+				}
+			}
+		}
+
 		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir, a.cfg.Email)
 		out, nativeID, err := a.run.Run(ctx, prompt, sid, isNew)
 		if err != nil {
@@ -142,13 +172,9 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 					"from", m.From, "old", sid, "new", nativeID)
 			}
 		}
-		files, err := collectReplyFiles(rpDir)
-		if err != nil {
-			a.log.Warn("reply file collect failed", "err", err)
-		}
 		// Greeting protocol: the agent must open its reply with a salutation
-		// line (Hi/Hello/Hey + name, Hi there, or Good morning/afternoon/
-		// evening). Anything written before the greeting — audit reports,
+		// line (Hi/Hello + name, or Hi there for name-less senders).
+		// Anything written before the greeting — audit reports,
 		// classification narratives, tool-call notes — is silently dropped
 		// here and never reaches the human. This is enforced as a hard
 		// contract on both sides: the prompt in BuildPrompt tells the
@@ -160,8 +186,50 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("agent stdout missing greeting; sending as-is",
 				"from", m.From, "subject", m.Subject, "preview", preview(out))
 		}
+		// Degenerate-reply guard: a run whose body is only the mandatory
+		// greeting (or nothing) terminated before doing the task — observed
+		// 2026-08-12 when a weak model opened a resumed thread with "Hi
+		// Chris," as a tool-call-free message and ended its turn on the spot.
+		// Never email a bare greeting: retry once (a second spawn usually
+		// does the work), then give up with an explicit failure notice
+		// rather than shipping an empty reply.
+		if IsDegenerateReply(greeted) {
+			a.log.Warn("agent produced a greeting-only reply; retrying once",
+				"from", m.From, "subject", m.Subject, "preview", preview(out))
+			retrySid := sid
+			if nativeID != "" {
+				retrySid = nativeID
+			}
+			if out2, nativeID2, rerr := a.run.Run(ctx, prompt, retrySid, false); rerr != nil {
+				a.log.Error("agent retry failed", "from", m.From, "err", rerr)
+			} else {
+				out = out2
+				if nativeID2 != "" && nativeID2 != retrySid {
+					if err := a.sess.Replace(m.ThreadRoot(), nativeID2); err != nil {
+						a.log.Warn("session replace failed", "from", m.From, "err", err)
+					}
+				}
+				greeted, gerr = ExtractBodyAfterGreeting(out, m.FromName)
+				if gerr != nil {
+					a.log.Warn("agent stdout missing greeting after retry; sending as-is",
+						"from", m.From, "subject", m.Subject, "preview", preview(out))
+				}
+			}
+			if IsDegenerateReply(greeted) {
+				a.log.Error("agent produced a greeting-only reply twice; not sending bare greeting",
+					"from", m.From, "subject", m.Subject)
+				_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
+					"Sorry, the task did not produce a reply (the agent returned an empty response twice). Please resend or rephrase the task.", nil)
+				_ = a.mb.MarkSeen(ctx, m.UID)
+				continue
+			}
+		}
+		files, err := collectReplyFiles(rpDir)
+		if err != nil {
+			a.log.Warn("reply file collect failed", "err", err)
+		}
 		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), greeted, files); err != nil {
-			a.log.Error("reply failed", "from", m.From, "err", err)
+			a.logSendFailure("reply failed", m, err)
 			a.notifyReplyFailure(m, out, files, err)
 			continue // leave unseen so a later poll retries the reply
 		}
@@ -199,8 +267,22 @@ func (a *App) notifyReplyFailure(m *message.Message, body string, attachments []
 	}
 	if err := n.NotifyFailure(m.From, m.Subject, m.MessageID,
 		appendRef(m.References, m.MessageID), 3, lastErr, msgSize); err != nil {
-		a.log.Error("failure notification send failed", "from", m.From, "err", err)
+		a.logSendFailure("failure notification send failed", m, err)
 	}
+}
+
+// logSendFailure logs an outbound SMTP failure. On an auth rejection the
+// message's sender/recipient are irrelevant — the credential is what the
+// server refused — so it logs the auth account (cfg.Email, the SMTP username)
+// and omits from/to. Any other failure logs the recipient so an operator can
+// see which reply didn't go out. errors.Is matches replier.ErrAuth through the
+// wrap chain.
+func (a *App) logSendFailure(msg string, m *message.Message, err error) {
+	if errors.Is(err, replier.ErrAuth) {
+		a.log.Error(msg, "account", a.cfg.Email, "err", err)
+		return
+	}
+	a.log.Error(msg, "to", m.From, "err", err)
 }
 
 // Run drives a main loop that fans in N trigger goroutines (one per

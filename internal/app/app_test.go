@@ -164,6 +164,99 @@ func TestProcessAdoptsNativeSessionID(t *testing.T) {
 	}
 }
 
+// TestProcessLongTaskSendsAckThenReply covers the two-stage flow:
+// classifier returns "long", so ProcessUnseen must send the interim ack
+// email FIRST, then run the real task and send the real reply. The
+// scripted runner returns different output per call so we can verify the
+// prompt on the real (second) call is runner.BuildPrompt output, not the
+// classify prompt.
+func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
+	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 1, Data: []byte(wlEML)}}}
+	// wlEML has no display name → FromName is "", so the greeting scanner
+	// matches "Hi there,". Using it here lets us assert that greeting
+	// stripping ran on the real reply (call #2).
+	run := &scriptedRunner{outs: []string{"RUNTIME: long\nETA_MIN: 10", "Hi there,\n\nthe answer"}}
+	rep := &fakeSender{}
+	app := newTestApp(t, mb, run, rep)
+
+	if err := app.ProcessUnseen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.prompts) != 2 {
+		t.Fatalf("runner should be called twice (classify + real), got %d", len(run.prompts))
+	}
+	if !strings.Contains(run.prompts[0], "task-duration classifier") {
+		t.Errorf("call 1 prompt should be the classify prompt, got preview %q", preview(run.prompts[0]))
+	}
+	if strings.Contains(run.prompts[1], "task-duration classifier") {
+		t.Errorf("call 2 prompt should be the real BuildPrompt output, not the classify prompt")
+	}
+	if len(rep.replies) != 2 {
+		t.Fatalf("expected 2 replies (ack then real), got %d: %#v", len(rep.replies), rep.replies)
+	}
+	if !strings.Contains(rep.replies[0], "这个任务执行时间比较长") {
+		t.Errorf("first reply should be the Chinese ack, got %q", preview(rep.replies[0]))
+	}
+	if !strings.Contains(rep.replies[0], "10 分钟") {
+		t.Errorf("ack should carry the ETA=10, got %q", preview(rep.replies[0]))
+	}
+	if !strings.Contains(rep.replies[1], "the answer") {
+		t.Errorf("second reply should carry the real answer, got %q", preview(rep.replies[1]))
+	}
+	if strings.Contains(rep.replies[1], "这个任务执行时间比较长") {
+		t.Errorf("second reply should NOT be the ack copy, got %q", preview(rep.replies[1]))
+	}
+}
+
+// TestProcessShortTaskSkipsAck covers the short-runtime branch: classifier
+// says "short", so only the real reply is sent (no interim ack).
+func TestProcessShortTaskSkipsAck(t *testing.T) {
+	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 1, Data: []byte(wlEML)}}}
+	run := &scriptedRunner{outs: []string{"RUNTIME: short\nETA_MIN: 1", "Hi there,\n\nthe answer"}}
+	rep := &fakeSender{}
+	app := newTestApp(t, mb, run, rep)
+
+	if err := app.ProcessUnseen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.replies) != 1 {
+		t.Fatalf("short task should produce exactly one reply, got %d: %#v", len(rep.replies), rep.replies)
+	}
+	if !strings.Contains(rep.replies[0], "the answer") {
+		t.Errorf("only reply should carry the real answer, got %q", preview(rep.replies[0]))
+	}
+	if strings.Contains(rep.replies[0], "这个任务执行时间比较长") {
+		t.Errorf("short-task reply must not be the ack copy, got %q", preview(rep.replies[0]))
+	}
+}
+
+// scriptedRunner returns a canned stdout per invocation, one per Run call,
+// in order. It records every prompt passed in so tests can assert the
+// classifier prompt lands first and the real BuildPrompt lands second.
+// Overflowing calls beyond len(outs) reuse the last entry (defensive; keeps
+// a test that miscounts from crashing on an index panic).
+type scriptedRunner struct {
+	mu      sync.Mutex
+	outs    []string
+	native  string
+	prompts []string
+	sids    []string
+	isNews  []bool
+}
+
+func (r *scriptedRunner) Run(ctx context.Context, prompt, sid string, isNew bool) (string, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prompts = append(r.prompts, prompt)
+	r.sids = append(r.sids, sid)
+	r.isNews = append(r.isNews, isNew)
+	idx := len(r.prompts) - 1
+	if idx >= len(r.outs) {
+		idx = len(r.outs) - 1
+	}
+	return r.outs[idx], r.native, nil
+}
+
 // messageThreadRootOf mirrors the parser's MessageID keying. message.Message
 // retains the <...> brackets on m.MessageID (no strip), so the registry key
 // matches what's in the email header verbatim.
