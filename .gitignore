@@ -8,6 +8,8 @@
 # local runtime state
 *.session.json
 aamp-watcher-sessions.json
+perch-debug.log
+*.debug.log
 
 # editor / OS
 .DS_Store
