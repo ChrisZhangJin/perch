@@ -123,30 +123,35 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
 
-		// Duration probe: ask the agent (in a throwaway, fresh session) whether
-		// this task will run long. If long, send an interim ack email so the
-		// human isn't left wondering while the real run works. Classifier
-		// errors are logged and swallowed — a bad probe must never block the
-		// real reply.
+		// Duration probe: when cfg.LongTaskAck is on, ask the agent (in a
+		// throwaway, fresh session) whether this task will run long. If long,
+		// send an interim ack email so the human isn't left wondering while
+		// the real run works. Classifier errors are logged and swallowed — a
+		// bad probe must never block the real reply.
 		//
 		// The probe uses IsNew=true with sessionID="" so it never pollutes the
 		// thread's actual session; agents that persist state (nanopi) will
 		// mint a throwaway session id we deliberately drop on the floor.
-		classifyPrompt := BuildClassifyPrompt(m.From, m.Subject, m.Body)
-		classifyOut, _, cerr := a.run.Run(ctx, classifyPrompt, "", true)
-		if cerr != nil {
-			a.log.Warn("classifier run failed; skipping ack path",
-				"from", m.From, "err", cerr)
-		} else {
-			runtime, etaMin := ParseClassifyOutput(classifyOut)
-			a.log.Info("task classified",
-				"from", m.From, "runtime", runtime, "eta_min", etaMin)
-			if runtime == "long" {
-				ack := BuildLongAckBody(m.FromName, etaMin)
-				if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
-					appendRef(m.References, m.MessageID), ack, nil); err != nil {
-					a.log.Warn("long-task ack send failed; continuing to run task",
-						"from", m.From, "err", err)
+		//
+		// Off by default: the probe costs one extra agent invocation per
+		// email, so opt-in only. See config.LongTaskAck.
+		if a.cfg.LongTaskAck {
+			classifyPrompt := BuildClassifyPrompt(m.From, m.Subject, m.Body)
+			classifyOut, _, cerr := a.run.Run(ctx, classifyPrompt, "", true)
+			if cerr != nil {
+				a.log.Warn("classifier run failed; skipping ack path",
+					"from", m.From, "err", cerr)
+			} else {
+				runtime, etaMin := ParseClassifyOutput(classifyOut)
+				a.log.Info("task classified",
+					"from", m.From, "runtime", runtime, "eta_min", etaMin)
+				if runtime == "long" {
+					ack := BuildLongAckBody(m.FromName, etaMin)
+					if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
+						appendRef(m.References, m.MessageID), ack, nil); err != nil {
+						a.log.Warn("long-task ack send failed; continuing to run task",
+							"from", m.From, "err", err)
+					}
 				}
 			}
 		}

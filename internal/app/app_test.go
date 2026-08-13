@@ -178,6 +178,7 @@ func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
 	run := &scriptedRunner{outs: []string{"RUNTIME: long\nETA_MIN: 10", "Hi there,\n\nthe answer"}}
 	rep := &fakeSender{}
 	app := newTestApp(t, mb, run, rep)
+	app.cfg.LongTaskAck = true
 
 	if err := app.ProcessUnseen(context.Background()); err != nil {
 		t.Fatal(err)
@@ -215,6 +216,7 @@ func TestProcessShortTaskSkipsAck(t *testing.T) {
 	run := &scriptedRunner{outs: []string{"RUNTIME: short\nETA_MIN: 1", "Hi there,\n\nthe answer"}}
 	rep := &fakeSender{}
 	app := newTestApp(t, mb, run, rep)
+	app.cfg.LongTaskAck = true
 
 	if err := app.ProcessUnseen(context.Background()); err != nil {
 		t.Fatal(err)
@@ -227,6 +229,35 @@ func TestProcessShortTaskSkipsAck(t *testing.T) {
 	}
 	if strings.Contains(rep.replies[0], "这个任务执行时间比较长") {
 		t.Errorf("short-task reply must not be the ack copy, got %q", preview(rep.replies[0]))
+	}
+}
+
+// TestProcessLongTaskAckDisabledByDefault covers the opt-in gate:
+// cfg.LongTaskAck is false, so ProcessUnseen must skip the classifier
+// entirely — the runner is called ONCE (the real task) and only one
+// reply is sent, even if the scripted runner would have returned a
+// "long" verdict on a probe call.
+func TestProcessLongTaskAckDisabledByDefault(t *testing.T) {
+	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 1, Data: []byte(wlEML)}}}
+	run := &scriptedRunner{outs: []string{"RUNTIME: long\nETA_MIN: 10"}}
+	rep := &fakeSender{}
+	app := newTestApp(t, mb, run, rep)
+	// LongTaskAck defaults to false; do NOT set it.
+
+	if err := app.ProcessUnseen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.prompts) != 1 {
+		t.Fatalf("classifier must not run when LongTaskAck is off; got %d runner calls", len(run.prompts))
+	}
+	if strings.Contains(run.prompts[0], "task-duration classifier") {
+		t.Errorf("the single runner call must be the real task, not the classify prompt")
+	}
+	if len(rep.replies) != 1 {
+		t.Fatalf("expected exactly one reply, got %d", len(rep.replies))
+	}
+	if strings.Contains(rep.replies[0], "这个任务执行时间比较长") {
+		t.Errorf("reply must not be the Chinese ack when LongTaskAck is off")
 	}
 }
 

@@ -45,6 +45,11 @@ type Config struct {
 	SessionStore       string
 	TLSInsecure        bool
 	LogLevel           string // "debug" | "info" | "warn" | "error"
+	// LongTaskAck gates the two-stage inbound flow (classifier probe +
+	// interim "processing, please wait" ack email for long tasks). Default
+	// off: every long-task ack costs an extra agent invocation per email,
+	// so opt-in only. See internal/app/classify.go for the contract.
+	LongTaskAck bool
 }
 
 // yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
@@ -69,6 +74,7 @@ type yamlConfig struct {
 	SessionStore       string        `yaml:"session_store"`
 	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
 	LogLevel           string        `yaml:"log_level"`
+	LongTaskAck        bool          `yaml:"long_task_ack"`
 }
 
 // Load reads the YAML file at cfgPath (or the default search path), layers
@@ -210,6 +216,9 @@ func applyYAML(c *Config, path string) error {
 	if y.LogLevel != "" {
 		c.LogLevel = y.LogLevel
 	}
+	if y.LongTaskAck {
+		c.LongTaskAck = y.LongTaskAck
+	}
 	return nil
 }
 
@@ -312,6 +321,11 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		c.LogLevel = v
+	}
+	if v := os.Getenv("LONG_TASK_ACK"); v != "" {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			c.LongTaskAck = b
+		}
 	}
 }
 

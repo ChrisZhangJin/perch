@@ -20,7 +20,7 @@ func withCleanEnv(t *testing.T) {
 		"AGENT_EMAIL", "AGENT_AUTH_CODE",
 		"ALLOW_FROM",
 		"POLL_INTERVAL", "TASK_TIMEOUT", "MAX_PROMPT_BYTES",
-		"SESSION_STORE", "TLS_INSECURE_SKIP_VERIFY", "LOG_LEVEL", "PERCH_CONFIG",
+		"SESSION_STORE", "TLS_INSECURE_SKIP_VERIFY", "LOG_LEVEL", "LONG_TASK_ACK", "PERCH_CONFIG",
 	} {
 		t.Setenv(k, "")
 	}
@@ -238,6 +238,60 @@ func TestLogLevelEnvOverridesYAML(t *testing.T) {
 	}
 	if cfg.LogLevel != "warn" {
 		t.Errorf("env LOG_LEVEL should override YAML, got %q", cfg.LogLevel)
+	}
+}
+
+func TestLongTaskAckDefaultOff(t *testing.T) {
+	withCleanEnv(t)
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LongTaskAck {
+		t.Errorf("LongTaskAck default = true, want false (opt-in only)")
+	}
+}
+
+func TestLongTaskAckFromYAML(t *testing.T) {
+	withCleanEnv(t)
+	yaml := []byte("long_task_ack: true\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.LongTaskAck {
+		t.Errorf("YAML long_task_ack: true should enable, got false")
+	}
+}
+
+func TestLongTaskAckEnvOverridesYAML(t *testing.T) {
+	withCleanEnv(t)
+	// YAML says off; env says on. Env must win.
+	yaml := []byte("long_task_ack: false\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+	t.Setenv("LONG_TASK_ACK", "true")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.LongTaskAck {
+		t.Errorf("env LONG_TASK_ACK=true should override YAML, got false")
 	}
 }
 
