@@ -175,7 +175,7 @@ func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
 	// wlEML has no display name → FromName is "", so the greeting scanner
 	// matches "Hi there,". Using it here lets us assert that greeting
 	// stripping ran on the real reply (call #2).
-	run := &scriptedRunner{outs: []string{"RUNTIME: long\nETA_MIN: 10", "Hi there,\n\nthe answer"}}
+	run := &scriptedRunner{outs: []string{"analysis of a batch job...\n<<<PERCH_CLASSIFY>>> long 10", "Hi there,\n\nthe answer"}}
 	rep := &fakeSender{}
 	app := newTestApp(t, mb, run, rep)
 	app.cfg.LongTaskAck = true
@@ -213,7 +213,7 @@ func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
 // says "short", so only the real reply is sent (no interim ack).
 func TestProcessShortTaskSkipsAck(t *testing.T) {
 	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 1, Data: []byte(wlEML)}}}
-	run := &scriptedRunner{outs: []string{"RUNTIME: short\nETA_MIN: 1", "Hi there,\n\nthe answer"}}
+	run := &scriptedRunner{outs: []string{"quick lookup.\n<<<PERCH_CLASSIFY>>> short 1", "Hi there,\n\nthe answer"}}
 	rep := &fakeSender{}
 	app := newTestApp(t, mb, run, rep)
 	app.cfg.LongTaskAck = true
@@ -239,7 +239,7 @@ func TestProcessShortTaskSkipsAck(t *testing.T) {
 // "long" verdict on a probe call.
 func TestProcessLongTaskAckDisabledByDefault(t *testing.T) {
 	mb := &fakeMailbox{msgs: []mailbox.Raw{{UID: 1, Data: []byte(wlEML)}}}
-	run := &scriptedRunner{outs: []string{"RUNTIME: long\nETA_MIN: 10"}}
+	run := &scriptedRunner{outs: []string{"analysis of a batch job...\n<<<PERCH_CLASSIFY>>> long 10"}}
 	rep := &fakeSender{}
 	app := newTestApp(t, mb, run, rep)
 	// LongTaskAck defaults to false; do NOT set it.

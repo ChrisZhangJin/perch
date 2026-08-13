@@ -7,54 +7,64 @@ import (
 	"strings"
 )
 
-// BuildClassifyPrompt frames a short classification prompt asking the agent to
-// judge whether the incoming task is long-running or short. Output contract
-// (single line, first non-empty line of stdout):
+// classifySentinel is the marker the classifier agent must emit on its
+// final answer line. Everything before it is free-form — the agent may
+// read files, run tools, think out loud, whatever helps it decide.
+// Only the sentinel-tail line is parsed by perch.
+const classifySentinel = "<<<PERCH_CLASSIFY>>>"
+
+// BuildClassifyPrompt frames a permissive classification prompt. The agent
+// is invited to analyze freely (read files, use tools, reason) and is only
+// asked to close its answer with a single line of the form:
 //
-//	RUNTIME: <short|long>
-//	ETA_MIN: <integer>
+//	<<<PERCH_CLASSIFY>>> <short|long> <eta_minutes>
 //
-// The two-line form is a hard contract; anything else is treated as "short"
-// (the safe default — the human just gets the normal reply without an ack).
-// The subject/body are quoted so the agent can see what task it is judging
-// without executing it.
+// Locking the model behind an "output only two lines, no explanation"
+// contract makes weaker models skip tool calls and hallucinate — better
+// to let them work, then pluck the verdict off the last line.
 func BuildClassifyPrompt(from, subject, body string) string {
 	var b strings.Builder
-	b.WriteString("You are perch's task-duration classifier. Do NOT perform the task described below — only judge how long it would take you to complete it.\n\n")
-	b.WriteString("Output contract (EXACTLY two lines, no salutation, no explanation, no markdown):\n")
-	b.WriteString("    RUNTIME: <short|long>\n")
-	b.WriteString("    ETA_MIN: <integer minutes>\n\n")
-	b.WriteString("Rules:\n")
-	b.WriteString("- \"short\" means you can finish in under 1 minute (a quick read, a lookup, a small edit).\n")
-	b.WriteString("- \"long\" means it will take at least 1 minute — anything that needs multi-step work, running commands, exploring a codebase, or repeated agent turns.\n")
-	b.WriteString("- ETA_MIN is your best integer estimate; use 1 for short tasks and any positive integer for long ones.\n")
-	b.WriteString("- Do NOT do the task. Do NOT produce a greeting. Emit only the two contract lines.\n\n")
+	b.WriteString("You are perch's task-duration classifier. Judge how long the task below would take *you* to complete — do NOT complete it. You may read files, run commands, or think out loud; whatever helps you decide.\n\n")
+	b.WriteString("Definitions:\n")
+	b.WriteString("- short: you can finish in under 1 minute (a quick read, a lookup, a small edit).\n")
+	b.WriteString("- long: it will take at least 1 minute — anything with multi-step work, batch operations, network round-trips, or repeated agent turns.\n\n")
+	b.WriteString("At the very end of your reply, on its OWN line, emit:\n")
+	fmt.Fprintf(&b, "    %s <short|long> <eta_minutes>\n", classifySentinel)
+	b.WriteString("Examples:\n")
+	fmt.Fprintf(&b, "    %s long 15\n", classifySentinel)
+	fmt.Fprintf(&b, "    %s short 1\n\n", classifySentinel)
+	b.WriteString("Perch discards everything you write and only reads that final sentinel line, so your analysis above is for your own benefit only.\n\n")
 	fmt.Fprintf(&b, "Task from %s (subject: %q):\n", from, subject)
 	b.WriteString(body)
 	return b.String()
 }
 
-// classifyRuntimeRe / classifyETARe pull the two fields out of the classifier
-// output. Matching is case-insensitive on the label; the value is trimmed.
-var (
-	classifyRuntimeRe = regexp.MustCompile(`(?im)^\s*RUNTIME\s*:\s*(short|long)\s*$`)
-	classifyETARe     = regexp.MustCompile(`(?im)^\s*ETA_MIN\s*:\s*(\d+)\s*$`)
+// classifyTailRe matches the sentinel line: sentinel + short|long + integer.
+// (?i) so weaker models can emit "SHORT" / "Long"; leading whitespace
+// tolerated so the sentinel can sit inside a bullet or block.
+var classifyTailRe = regexp.MustCompile(
+	`(?i)` + regexp.QuoteMeta(classifySentinel) + `\s+(short|long)\s+(\d+)`,
 )
 
 // ParseClassifyOutput extracts (runtime, etaMinutes) from the classifier
-// agent's stdout. Missing/malformed fields fall back to ("short", 0) — the
-// safe default that skips the ack path entirely, so a classifier hiccup can
-// never delay the real reply.
+// agent's stdout. Scans from the tail so if the sentinel appears more
+// than once (agent quoted its own examples earlier), the last occurrence
+// — the real verdict — wins.
+//
+// Missing sentinel or malformed value → ("short", 0), the safe default:
+// skip the ack path entirely so a classifier hiccup can never delay the
+// real reply.
 func ParseClassifyOutput(s string) (runtime string, etaMin int) {
 	runtime = "short"
 	etaMin = 0
-	if m := classifyRuntimeRe.FindStringSubmatch(s); len(m) == 2 {
-		runtime = strings.ToLower(m[1])
+	matches := classifyTailRe.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return runtime, etaMin
 	}
-	if m := classifyETARe.FindStringSubmatch(s); len(m) == 2 {
-		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
-			etaMin = n
-		}
+	last := matches[len(matches)-1]
+	runtime = strings.ToLower(last[1])
+	if n, err := strconv.Atoi(last[2]); err == nil && n > 0 {
+		etaMin = n
 	}
 	return runtime, etaMin
 }
