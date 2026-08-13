@@ -6,6 +6,39 @@ import (
 	"testing"
 )
 
+// TestIsDegenerateReply pins the guard that stops perch from emailing a
+// bare greeting. Regression for the 2026-08-12 run whose entire output was
+// "Hi Chris," (a weak model ended its turn on the greeting before doing the
+// task). A reply is degenerate iff it has no content beyond blank lines and
+// an optional single greeting line; anything with a real body is not.
+func TestIsDegenerateReply(t *testing.T) {
+	degenerate := []string{
+		"",
+		"   \n\t\n",
+		"Hi Chris,",
+		"Hi Chris,\n",
+		"  Hi Chris,  \n\n\n",
+		"Hello Chris,\n",
+		"Hi there,\n\n",
+	}
+	for _, s := range degenerate {
+		if !IsDegenerateReply(s) {
+			t.Errorf("want degenerate, got body-bearing for %q", s)
+		}
+	}
+	healthy := []string{
+		"Hi Chris,\n\nThe answer is 42.\n",
+		"Hi Chris,\nDone.",
+		"Hello Chris,\n\nReport attached.\n",
+		"No greeting but real content here.", // not degenerate; sent as-is
+	}
+	for _, s := range healthy {
+		if IsDegenerateReply(s) {
+			t.Errorf("want body-bearing, got degenerate for %q", s)
+		}
+	}
+}
+
 func TestExtractBodyAfterGreeting_Standard(t *testing.T) {
 	in := "Hi Chris,\n\nThe answer is 42.\n"
 	out, err := ExtractBodyAfterGreeting(in, "Chris")
@@ -28,17 +61,6 @@ func TestExtractBodyAfterGreeting_Hello(t *testing.T) {
 	}
 }
 
-func TestExtractBodyAfterGreeting_Hey(t *testing.T) {
-	in := "Hey Chris,\n\nOn it.\n"
-	out, err := ExtractBodyAfterGreeting(in, "Chris")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if out != in {
-		t.Errorf("want %q, got %q", in, out)
-	}
-}
-
 func TestExtractBodyAfterGreeting_HiThere(t *testing.T) {
 	in := "Hi there,\n\nThe result is below.\n"
 	out, err := ExtractBodyAfterGreeting(in, "")
@@ -50,37 +72,23 @@ func TestExtractBodyAfterGreeting_HiThere(t *testing.T) {
 	}
 }
 
-func TestExtractBodyAfterGreeting_GoodMorning(t *testing.T) {
-	in := "Good morning,\n\nFiles attached.\n"
-	out, err := ExtractBodyAfterGreeting(in, "")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+// TestExtractBodyAfterGreeting_RejectsDroppedForms pins that greetings we
+// used to accept — Hey, Good morning/afternoon/evening — are no longer
+// recognized. The shrunken protocol accepts only Hi/Hello + name and Hi
+// there. Regression guard: if someone re-widens the regex, these will
+// silently start matching again and drift the contract.
+func TestExtractBodyAfterGreeting_RejectsDroppedForms(t *testing.T) {
+	dropped := []string{
+		"Hey Chris,\n\nOn it.\n",
+		"Good morning,\n\nFiles attached.\n",
+		"Good morning, Chris,\n\nFiles attached.\n",
+		"Good afternoon,\n\nDone.\n",
+		"Good evening,\n\nDone.\n",
 	}
-	if out != in {
-		t.Errorf("want %q, got %q", in, out)
-	}
-}
-
-func TestExtractBodyAfterGreeting_GoodMorningWithName(t *testing.T) {
-	in := "Good morning, Chris,\n\nFiles attached.\n"
-	out, err := ExtractBodyAfterGreeting(in, "Chris")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if out != in {
-		t.Errorf("want %q, got %q", in, out)
-	}
-}
-
-func TestExtractBodyAfterGreeting_GoodAfternoonEvening(t *testing.T) {
-	for _, greeting := range []string{"Good afternoon,", "Good evening,", "GOOD EVENING,"} {
-		in := greeting + "\n\nDone.\n"
-		out, err := ExtractBodyAfterGreeting(in, "")
-		if err != nil {
-			t.Fatalf("%s: unexpected err: %v", greeting, err)
-		}
-		if out != in {
-			t.Errorf("%s: want %q, got %q", greeting, in, out)
+	for _, in := range dropped {
+		_, err := ExtractBodyAfterGreeting(in, "Chris")
+		if !errors.Is(err, ErrNoGreeting) {
+			t.Errorf("input %q: want ErrNoGreeting after shrinking greeting set, got %v", in, err)
 		}
 	}
 }
@@ -98,12 +106,31 @@ func TestExtractBodyAfterGreeting_ChineseName(t *testing.T) {
 
 func TestExtractBodyAfterGreeting_LeadingWhitespace(t *testing.T) {
 	in := "  hi Chris,  \n\nBody.\n"
+	// New contract 2026-08-12: leading horizontal whitespace before the
+	// greeting is trimmed so the reply doesn't ship with awkward indentation.
+	want := "hi Chris,  \n\nBody.\n"
 	out, err := ExtractBodyAfterGreeting(in, "Chris")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if out != in {
-		t.Errorf("want %q, got %q", in, out)
+	if out != want {
+		t.Errorf("want %q, got %q", want, out)
+	}
+}
+
+// TestExtractBodyAfterGreeting_RunOnGreeting pins the 2026-08-12 splitter
+// relaxation: a weak model sometimes runs the greeting onto the end of the
+// previous sentence ("...report attached.Hi Chris,\n"). The splitter must
+// still recognise the greeting and drop the run-on prefix.
+func TestExtractBodyAfterGreeting_RunOnGreeting(t *testing.T) {
+	in := "Body: polite email, mention audit executed.Hi Chris Zhang Jin,\n\nI've executed the audit.\n"
+	want := "Hi Chris Zhang Jin,\n\nI've executed the audit.\n"
+	out, err := ExtractBodyAfterGreeting(in, "Chris Zhang Jin")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out != want {
+		t.Errorf("want %q, got %q", want, out)
 	}
 }
 

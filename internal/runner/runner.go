@@ -161,31 +161,28 @@ func agentDisplayName(email string) string {
 // transcript of the work.
 func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir, agentEmail string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q). Your entire stdout will be sent back to them as the body of the reply email — there is no follow-up turn to read intermediate output.\n\n", from, subject)
+	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q).\n\n", from, subject)
 	name := agentDisplayName(agentEmail)
 	greeting := "Hi"
 	if fromName != "" {
 		greeting = "Hi " + fromName + ","
 	}
-	b.WriteString("Reply rules:\n")
-	b.WriteString("- Be concise. Lead with the answer or result, not a plan.\n")
-	b.WriteString("- Do NOT narrate tool calls. Do NOT write phrases like \"Let me check...\", \"I see that...\", \"First I'll...\". The user does not see your reasoning; they only see your final text.\n")
-	b.WriteString("- Do NOT write internal-reasoning summaries either. Phrases like \"I'll start by...\", \"Now I have...\", \"I need to check...\", \"Both files exist but...\" must stay in your head and NEVER appear on stdout. The screenshot regression we are guarding against looked exactly like this — the agent's reasoning leaked into the email body and the human reader never wanted to see it.\n")
-	b.WriteString("- ZERO-thought rule: your stdout is the OUTPUT of the work, not the WORK ITSELF. If the answer is a short result, emit the result. If the answer requires walking through steps, write the polished steps — not your discoveries along the way.\n")
-	b.WriteString("- Do NOT preface with \"I will respond to your email\" or similar meta-commentary.\n")
-	b.WriteString("- If you must inspect files / run commands, do so silently and only emit the conclusion.\n")
-	b.WriteString("- If the task produces a file the user wants back, write it to the reply dir and your body should be a one-line caption (\"Here's the file you asked for.\"). Do not paste the file contents in the body.\n")
-	fmt.Fprintf(&b, "- This is a real human on the other end. Open with a polite salutation (e.g. %q), close with a sign-off (e.g. \"Best,\\n%s\"). The body is the email itself, not a chat transcript.\n", greeting, name)
-	b.WriteString("- GREETING PROTOCOL (hard contract): your reply MUST begin with exactly one greeting line, on its own line, matching one of these forms:\n")
-	b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hey <name>,\n    Hi there,\n    Good morning,\n    Good afternoon,\n    Good evening,\n")
-	b.WriteString("  where <name> is the sender's display name or the email local-part (e.g. \"Hi Chris,\"). Anything you write BEFORE this greeting line is silently discarded by perch on receipt — audit reports, classification narratives, \"Let me check...\", tool-call summaries, internal reasoning, all of it is dropped. Do not waste tokens on it. The greeting line is the first thing the human sees in your reply.\n\n")
+	b.WriteString("This is a real human on the other end — write a polite email reply, not a CLI transcript. ")
+	fmt.Fprintf(&b, "Open with a salutation (e.g. %q) and close with a sign-off (e.g. \"Best,\\n%s\").\n\n", greeting, name)
+	b.WriteString("GREETING PROTOCOL (hard contract): your reply MUST contain a greeting line, on its own line, matching one of these forms:\n")
+	b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hi there,\n")
+	b.WriteString("where <name> is the sender's display name or email local-part (e.g. \"Hi Chris,\"). The greeting MUST start on a fresh line — put a blank line or at least a newline before it, do NOT run it onto the end of another sentence like \"...report attached.Hi Chris,\". Everything you write BEFORE this greeting line is silently discarded by perch on receipt — think, reason, narrate, whatever helps you produce a good answer. Only the greeting line and everything after it reaches the human.\n\n")
+	if replyDir != "" {
+		fmt.Fprintf(&b, "ATTACHMENT PROTOCOL (hard contract): if the task calls for sending a file back, the sequence is exactly:\n")
+		fmt.Fprintf(&b, "    1. Write (or copy) the file into %s using your file tools.\n", replyDir)
+		fmt.Fprintf(&b, "    2. In the reply body, state that the file is attached (e.g. \"The file you asked for is attached.\").\n")
+		fmt.Fprintf(&b, "    3. Perch scans %s after your turn ends and attaches every file it finds to the outbound email. You do NOT attach anything yourself — perch handles it.\n", replyDir)
+		fmt.Fprintf(&b, "Do NOT narrate future action (\"I'll read the file and attach it\") and then end your turn — that ships an unfulfilled promise. Complete steps 1 and 2 in THIS turn. Do NOT paste file contents into the body; write the file to the reply dir instead.\n\n")
+	}
 	b.WriteString("Task:\n")
 	b.WriteString(body)
 	if len(attachments) > 0 {
 		fmt.Fprintf(&b, "\n\nAttachments (%d) saved on disk under:\n%s\nRead them with your file tools if the task requires it.", len(attachments), strings.Join(attachments, "\n"))
-	}
-	if replyDir != "" {
-		fmt.Fprintf(&b, "\n\nTo return files to the sender, write them into %s — they will be attached to your reply email automatically. Do not echo file contents in the body.", replyDir)
 	}
 	return b.String()
 }

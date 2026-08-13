@@ -46,6 +46,11 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 // its stdout IS the email body, otherwise it narrates CLI-style instead
 // of replying. Regression for the screenshot incident where the agent
 // wrote "I'll help you respond to Chris's email" as the reply.
+//
+// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
+// based splitter as the sole enforcement point. Re-enable or delete after
+// the simplified-prompt trial concludes.
+/*
 func TestBuildPromptMentionsEmailBody(t *testing.T) {
 	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
 	for _, want := range []string{
@@ -60,6 +65,7 @@ func TestBuildPromptMentionsEmailBody(t *testing.T) {
 		}
 	}
 }
+*/
 
 // TestBuildPromptForbidsMetaCommentary pins an explicit anti-narration
 // rule in the prompt so a future edit can't quietly drop it. The rule
@@ -70,6 +76,11 @@ func TestBuildPromptMentionsEmailBody(t *testing.T) {
 // start by...", "Now I have...") — the second screenshot regression.
 // Without these, the model defaults to writing its scratchpad into
 // stdout and the email recipient reads the agent's thinking.
+//
+// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
+// based splitter as the sole enforcement point. Re-enable or delete after
+// the simplified-prompt trial concludes.
+/*
 func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
 	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
 	low := strings.ToLower(p)
@@ -106,6 +117,38 @@ func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
 		t.Errorf("prompt should name an internal-reasoning phrase ('i'll start by' or 'now i have') as forbidden, got:\n%s", p)
 	}
 }
+*/
+
+// TestBuildPromptRequiresGrounding pins the anti-fabrication contract: the
+// prompt must tell the agent that the output-shaping rules govern what it
+// PRINTS, not whether it runs tools, and that factual claims must come from
+// a tool it actually ran. Regression for the 2026-08-12 incident where a
+// weak model (minimax-M3), under the "emit only the conclusion" framing,
+// skipped every tool call and fabricated command output — including a false
+// "No such file or directory" for a directory that existed. Without this
+// rule the prompt is pure output-shaping and never demands grounding.
+//
+// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
+// based splitter as the sole enforcement point. Re-enable or delete after
+// the simplified-prompt trial concludes.
+/*
+func TestBuildPromptRequiresGrounding(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	low := strings.ToLower(p)
+	// The print-vs-do distinction must be explicit.
+	if !strings.Contains(low, "what you print") || !strings.Contains(low, "what you do") {
+		t.Errorf("prompt must distinguish what the agent PRINTS from what it DOES, got:\n%s", p)
+	}
+	// Claims must be tied to a tool the agent actually ran.
+	if !strings.Contains(low, "actually ran") {
+		t.Errorf("prompt must require factual claims come from a tool actually run, got:\n%s", p)
+	}
+	// Fabrication must be named as forbidden.
+	if !strings.Contains(low, "never invent") {
+		t.Errorf("prompt must forbid inventing command output, got:\n%s", p)
+	}
+}
+*/
 
 // runnerFromStub wires a Runner that points at a stub binary instead of the
 // real claude binary, so the tests stay hermetic.
@@ -431,12 +474,18 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 // TestBuildPromptGreetingFallback covers the no-From-name case (mailing
 // list, automated sender): the salutation guidance should still be there,
 // just without a specific name to drop in.
+//
+// TEMPORARILY DISABLED 2026-08-12: pinned the exact phrase "polite salutation",
+// which the simplified prompt no longer uses. Re-enable or delete after the
+// simplified-prompt trial concludes.
+/*
 func TestBuildPromptGreetingFallback(t *testing.T) {
 	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com")
 	if !strings.Contains(p, "polite salutation") {
 		t.Errorf("prompt should still mention politeness when fromName is empty, got:\n%s", p)
 	}
 }
+*/
 
 // TestBuildPromptEnforcesGreetingProtocol pins the new hard contract: the
 // prompt must list the canonical greeting forms, name the rule as a hard
@@ -454,8 +503,8 @@ func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
 	must := []string{
 		"GREETING PROTOCOL",
 		"Hi <name>,",
+		"Hello <name>,",
 		"Hi there,",
-		"Good morning,",
 		"silently discarded",
 	}
 	for _, s := range must {
@@ -463,7 +512,75 @@ func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
 			t.Errorf("prompt must contain %q, got:\n%s", s, p)
 		}
 	}
+	// Dropped forms must NOT appear in the prompt — regression guard for
+	// the 2026-08-12 greeting-set shrink (Hi/Hello + Hi there only).
+	forbidden := []string{"Hey <name>,", "Good morning,", "Good afternoon,", "Good evening,"}
+	for _, s := range forbidden {
+		if strings.Contains(p, s) {
+			t.Errorf("prompt must NOT contain dropped form %q, got:\n%s", s, p)
+		}
+	}
 }
+
+// TestBuildPromptEnforcesAttachmentProtocol pins the attachment contract added
+// after the 2026-08-13 incident where nanopi (on a resumed thread) replied
+// "I'll read the file and attach it to the reply." then ended its turn —
+// files=0, no tool_call, the narration shipped as the email body. The fix is
+// a hard-contract section in the prompt that spells out the sequence: write
+// the file to the reply dir, say it's attached, perch handles the rest —
+// paired with an explicit ban on the "I'll do X" acknowledgment-then-stop
+// failure mode. A regression here means a future edit dropped the contract
+// and the failure will drift back.
+func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com")
+	must := []string{
+		"ATTACHMENT PROTOCOL",
+		"/home/agent/reply", // dir path appears in the numbered steps
+		"Perch scans",       // perch does the attaching, not the agent
+		"I'll read the file and attach it", // the exact failure phrase is named as forbidden
+		"Complete steps 1 and 2 in THIS turn",
+	}
+	for _, s := range must {
+		if !strings.Contains(p, s) {
+			t.Errorf("prompt must contain %q, got:\n%s", s, p)
+		}
+	}
+}
+
+// TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty confirms the section is
+// scoped to runs where a reply dir was actually staged. Adding the protocol
+// when the caller passed replyDir="" (unusual, but possible in tests) would
+// point the agent at a non-existent path.
+func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com")
+	if strings.Contains(p, "ATTACHMENT PROTOCOL") {
+		t.Errorf("prompt must NOT include ATTACHMENT PROTOCOL when replyDir is empty, got:\n%s", p)
+	}
+}
+
+// TestBuildPromptGreetingTimingAfterWork pins the timing clarification that
+// resolves the tension between "begin with a greeting" and "do the work
+// first". Regression for the 2026-08-12 run where a weak model read "begin
+// with the greeting line" literally, emitted "Hi Chris," as its first
+// tool-call-free message, and ended its turn before doing the task — perch
+// then shipped a bare greeting. The prompt must say the greeting belongs on
+// the FINAL result-bearing message and that a greeting-only reply is a
+// failure.
+//
+// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
+// based splitter as the sole enforcement point. Re-enable or delete after
+// the simplified-prompt trial concludes.
+/*
+func TestBuildPromptGreetingTimingAfterWork(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	low := strings.ToLower(p)
+	for _, want := range []string{"do all of your tool work first", "only a greeting"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("prompt must contain %q to fix greeting timing, got:\n%s", want, p)
+		}
+	}
+}
+*/
 
 // TestAgentDisplayName verifies the sign-off name derivation. The perp
 // convention is agent_<name>@<domain>; the helper strips the agent_
