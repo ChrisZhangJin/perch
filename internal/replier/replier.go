@@ -229,7 +229,7 @@ func (r *Replier) sendOnce(to string, msg []byte) error {
 	}()
 
 	if err := c.Auth(smtp.PlainAuth("", r.cfg.Email, r.cfg.AuthCode, host)); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+		return fmt.Errorf("%w (account %s): %v", ErrAuth, r.cfg.Email, err)
 	}
 	if err := c.Mail(r.cfg.Email); err != nil {
 		return fmt.Errorf("smtp mail: %w", err)
@@ -306,7 +306,7 @@ func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []stri
 			}
 			defer func() { _ = c.Quit() }()
 			if err := c.Auth(smtp.PlainAuth("", r.cfg.Email, r.cfg.AuthCode, host)); err != nil {
-				return fmt.Errorf("smtp auth: %w", err)
+				return fmt.Errorf("%w (account %s): %v", ErrAuth, r.cfg.Email, err)
 			}
 			if err := c.Mail(r.cfg.Email); err != nil {
 				return fmt.Errorf("smtp mail: %w", err)
@@ -346,6 +346,14 @@ func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []stri
 // succeed on retry: broken pipe, connection reset, EOF, timeout, "421 try
 // again later" / "450 mailbox unavailable" style SMTP replies, DNS hiccups.
 // Permanent failures (auth fail, bad address, malformed message) return false.
+// ErrAuth marks an SMTP authentication failure (163 returns "535 Error:
+// authentication failed"). It is permanent — the account / authorization-code
+// pair was rejected, so retrying the same credentials is futile. The wrapped
+// error names the auth account, since the message's from/to are irrelevant to
+// a credential rejection; callers match it with errors.Is to log the account
+// instead of the recipient.
+var ErrAuth = errors.New("smtp authentication failed")
+
 func isTransient(err error) bool {
 	if err == nil {
 		return false
