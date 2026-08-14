@@ -1,9 +1,12 @@
 package app
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -417,8 +420,10 @@ func sanitizeDirName(s string) string {
 	return out
 }
 
-// collectReplyFiles returns the paths of every file staged in the reply dir
-// (top-level only; subdirectories are ignored to avoid surprises).
+// collectReplyFiles returns the paths of every file staged in the reply dir.
+// Top-level files are collected as-is; each top-level subdirectory is packed
+// into a sibling <name>.tar.gz so a single email can carry a folder tree.
+// The tarballs are written into dir itself, so cleanReplyDir sweeps them.
 func collectReplyFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -430,11 +435,70 @@ func collectReplyFiles(dir string) ([]string, error) {
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() {
+			tarPath, err := packDirToTarGz(filepath.Join(dir, e.Name()), dir)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, tarPath)
 			continue
 		}
 		files = append(files, filepath.Join(dir, e.Name()))
 	}
 	return files, nil
+}
+
+// packDirToTarGz writes a gzipped tar of srcDir into outDir as
+// <base(srcDir)>.tar.gz and returns the tarball path. Entry names inside
+// the archive are relative to srcDir's parent so extraction reproduces the
+// original folder name at the root.
+func packDirToTarGz(srcDir, outDir string) (string, error) {
+	base := filepath.Base(srcDir)
+	outPath := filepath.Join(outDir, base+".tar.gz")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	parent := filepath.Dir(srcDir)
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(parent, path)
+		if err != nil {
+			return err
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = filepath.ToSlash(rel)
+		if info.IsDir() {
+			hdr.Name += "/"
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tw, src)
+		src.Close()
+		return copyErr
+	})
+	if err != nil {
+		return "", err
+	}
+	return outPath, nil
 }
 
 // cleanReplyDir removes everything under the reply dir after a successful

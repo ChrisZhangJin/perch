@@ -177,6 +177,7 @@ func BuildPrompt(from, fromName, subject, body string, attachments []string, rep
 		fmt.Fprintf(&b, "    1. Write (or copy) the file into %s using your file tools.\n", replyDir)
 		fmt.Fprintf(&b, "    2. In the reply body, state that the file is attached (e.g. \"The file you asked for is attached.\").\n")
 		fmt.Fprintf(&b, "    3. Perch scans %s after your turn ends and attaches every file it finds to the outbound email. You do NOT attach anything yourself — perch handles it.\n", replyDir)
+		fmt.Fprintf(&b, "Subdirectories are supported: any top-level folder under %s is auto-packed into <name>.tar.gz before sending, so you can preserve a folder structure by writing files under a subdirectory.\n", replyDir)
 		fmt.Fprintf(&b, "Do NOT narrate future action (\"I'll read the file and attach it\") and then end your turn — that ships an unfulfilled promise. Complete steps 1 and 2 in THIS turn. Do NOT paste file contents into the body; write the file to the reply dir instead.\n\n")
 	}
 	b.WriteString("Task:\n")
