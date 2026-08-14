@@ -25,3 +25,6 @@ grant.code
 
 # worktrees
 /.worktrees/
+
+# local planning notes
+/.planning/
