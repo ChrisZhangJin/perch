@@ -22,19 +22,16 @@ const classifySentinel = "<<<PERCH_CLASSIFY>>>"
 // Locking the model behind an "output only two lines, no explanation"
 // contract makes weaker models skip tool calls and hallucinate — better
 // to let them work, then pluck the verdict off the last line.
-func BuildClassifyPrompt(from, subject, body string) string {
+// subject is intentionally unused: the classifier judges purely on the
+// task body — user-written subjects are often terse or misleading and
+// would only distort the verdict.
+func BuildClassifyPrompt(from, _ /*subject*/, body string) string {
 	var b strings.Builder
-	b.WriteString("You are perch's task-duration classifier. Judge how long the task below would take *you* to complete — do NOT complete it. You may read files, run commands, or think out loud; whatever helps you decide.\n\n")
-	b.WriteString("Definitions:\n")
-	b.WriteString("- short: you can finish in under 1 minute (a quick read, a lookup, a small edit).\n")
-	b.WriteString("- long: it will take at least 1 minute — anything with multi-step work, batch operations, network round-trips, or repeated agent turns.\n\n")
-	b.WriteString("At the very end of your reply, on its OWN line, emit:\n")
-	fmt.Fprintf(&b, "    %s <short|long> <eta_minutes>\n", classifySentinel)
-	b.WriteString("Examples:\n")
-	fmt.Fprintf(&b, "    %s long 15\n", classifySentinel)
-	fmt.Fprintf(&b, "    %s short 1\n\n", classifySentinel)
-	b.WriteString("Perch discards everything you write and only reads that final sentinel line, so your analysis above is for your own benefit only.\n\n")
-	fmt.Fprintf(&b, "Task from %s (subject: %q):\n", from, subject)
+	b.WriteString("Evaluate the operation below. Classify it as short or long, and estimate how long it would take to finish. Do NOT actually run it — only estimate the duration. At the end of your reply, give a brief summary. Prefix the summary with ")
+	b.WriteString(classifySentinel)
+	b.WriteString(". Example: ")
+	fmt.Fprintf(&b, "%s short 1min\n\n", classifySentinel)
+	fmt.Fprintf(&b, "Task from %s:\n", from)
 	b.WriteString(body)
 	return b.String()
 }

@@ -87,7 +87,7 @@ func TestBuildLongAckBody_NoETA_NoName(t *testing.T) {
 
 func TestBuildClassifyPrompt_ContainsContract(t *testing.T) {
 	p := BuildClassifyPrompt("alice@163.com", "hi", "do the thing")
-	for _, want := range []string{"<<<PERCH_CLASSIFY>>>", "short", "long", "do the thing"} {
+	for _, want := range []string{"<<<PERCH_CLASSIFY>>>", "short", "long", "Do NOT actually run it", "do the thing"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)
 		}

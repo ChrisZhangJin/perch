@@ -186,10 +186,10 @@ func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
 	if len(run.prompts) != 2 {
 		t.Fatalf("runner should be called twice (classify + real), got %d", len(run.prompts))
 	}
-	if !strings.Contains(run.prompts[0], "task-duration classifier") {
+	if !strings.Contains(run.prompts[0], "Evaluate the operation") {
 		t.Errorf("call 1 prompt should be the classify prompt, got preview %q", preview(run.prompts[0]))
 	}
-	if strings.Contains(run.prompts[1], "task-duration classifier") {
+	if strings.Contains(run.prompts[1], "Evaluate the operation") {
 		t.Errorf("call 2 prompt should be the real BuildPrompt output, not the classify prompt")
 	}
 	if len(rep.replies) != 2 {
@@ -250,7 +250,7 @@ func TestProcessLongTaskAckDisabledByDefault(t *testing.T) {
 	if len(run.prompts) != 1 {
 		t.Fatalf("classifier must not run when LongTaskAck is off; got %d runner calls", len(run.prompts))
 	}
-	if strings.Contains(run.prompts[0], "task-duration classifier") {
+	if strings.Contains(run.prompts[0], "Evaluate the operation") {
 		t.Errorf("the single runner call must be the real task, not the classify prompt")
 	}
 	if len(rep.replies) != 1 {
