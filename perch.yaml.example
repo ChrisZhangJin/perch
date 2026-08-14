@@ -67,6 +67,14 @@ poll_interval: 60s                       # POLL_INTERVAL (poll tick / IDLE keepa
                                          #   (163/126: 10s feels snappier than 60s)
 task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)
 
+# --- Long-task interim ack -------------------------------------------------
+# When true, perch runs a lightweight classifier before the real task. If the
+# classifier says "long", perch sends an interim ack email so you know the
+# request landed while the real reply is still cooking. Off by default —
+# every inbound triggers only one agent run unless you opt in.
+# Env override: LONG_TASK_ACK=true
+# long_task_ack: false
+
 # --- Email handling --------------------------------------------------------
 max_prompt_bytes: 65536                 # MAX_PROMPT_BYTES (truncate huge bodies before
                                          #   the agent sees them — protects against
