@@ -168,6 +168,51 @@ func TestStripDaemonFlags(t *testing.T) {
 	}
 }
 
+func TestBuildChildArgv(t *testing.T) {
+	cases := []struct {
+		name       string
+		argv0      string
+		argv, want []string
+	}{
+		{
+			name:  "bare -D",
+			argv0: "perch",
+			argv:  []string{"-D"},
+			want:  []string{"perch"},
+		},
+		{
+			name:  "bare --daemon",
+			argv0: "/usr/local/bin/perch",
+			argv:  []string{"--daemon"},
+			want:  []string{"/usr/local/bin/perch"},
+		},
+		{
+			name:  "flags preserved after -D stripped",
+			argv0: "perch",
+			argv:  []string{"--config", "/tmp/x", "-D"},
+			want:  []string{"perch", "--config", "/tmp/x"},
+		},
+		{
+			name:  "no daemon flags",
+			argv0: "perch",
+			argv:  []string{"--config", "/tmp/x"},
+			want:  []string{"perch", "--config", "/tmp/x"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := buildChildArgv(c.argv0, c.argv)
+			if !equalStrings(got, c.want) {
+				t.Errorf("buildChildArgv(%q, %v) = %v, want %v",
+					c.argv0, c.argv, got, c.want)
+			}
+			if len(got) == 0 || got[0] != c.argv0 {
+				t.Errorf("child argv[0] = %q, want %q", got, c.argv0)
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

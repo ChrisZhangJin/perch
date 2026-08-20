@@ -104,6 +104,14 @@ func stripDaemonFlags(argv []string) []string {
 	return out
 }
 
+// buildChildArgv assembles the argv passed to os.StartProcess for the
+// daemon child: argv0 prepended so /proc/<pid>/cmdline shows the
+// program name (else `ps` reports a blank command), followed by the
+// parent's argv with daemon flags stripped.
+func buildChildArgv(argv0 string, argv []string) []string {
+	return append([]string{argv0}, stripDaemonFlags(argv)...)
+}
+
 // Daemonize re-execs the current binary as a detached child, writes
 // the child's PID to pidfilePath, and returns the child PID. argv0
 // is os.Args[0] from the parent (the program name as invoked);
@@ -159,7 +167,7 @@ func Daemonize(argv0 string, argv []string, pidfilePath string, extraEnv []strin
 			return 0, fmt.Errorf("%w: locate executable: %v", ErrReexecFailed, err)
 		}
 	}
-	child, err := os.StartProcess(self, stripDaemonFlags(argv),
+	child, err := os.StartProcess(self, buildChildArgv(argv0, argv),
 		&os.ProcAttr{
 			Env: append(os.Environ(),
 				append([]string{
