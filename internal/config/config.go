@@ -50,6 +50,13 @@ type Config struct {
 	// off: every long-task ack costs an extra agent invocation per email,
 	// so opt-in only. See internal/app/classify.go for the contract.
 	LongTaskAck bool
+	// AgentTaskOnly injects a SAFETY PROTOCOL section into the agent prompt
+	// telling the agent to refuse destructive side-requests that aren't the
+	// email's stated task. Read-only inspection and any operation inside
+	// cwd stay allowed. Default true — this is a light guardrail against
+	// prompt-injection-style side asks; a truly hostile prompt still needs
+	// the agent's own permission mode to block it.
+	AgentTaskOnly bool
 }
 
 // yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
@@ -65,6 +72,10 @@ type yamlConfig struct {
 		Name           string `yaml:"name"`
 		Workdir        string `yaml:"workdir"`
 		PermissionMode string `yaml:"permission_mode"`
+		// TaskOnly is a pointer so we can tell "unset" (leave the default)
+		// apart from "explicit false" (disable). The default is true, so a
+		// non-pointer would swallow the user's `task_only: false`.
+		TaskOnly *bool `yaml:"task_only"`
 	} `yaml:"ai_agent"`
 	AllowFrom          []string      `yaml:"allow_from"`
 	PollInterval       time.Duration `yaml:"poll_interval"`
@@ -124,6 +135,7 @@ func Defaults() *Config {
 		MaxAttachmentBytes: 50 << 20, // 50 MB per attachment
 		SessionStore:       filepath.Join(os.TempDir(), "perch-sessions.json"),
 		LogLevel:           "info",
+		AgentTaskOnly:      true,
 	}
 }
 
@@ -191,6 +203,9 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.AIAgent.PermissionMode != "" {
 		c.AgentPermMode = y.AIAgent.PermissionMode
+	}
+	if y.AIAgent.TaskOnly != nil {
+		c.AgentTaskOnly = *y.AIAgent.TaskOnly
 	}
 	if len(y.AllowFrom) > 0 {
 		c.AllowFrom = normalizeList(y.AllowFrom)

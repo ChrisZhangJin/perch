@@ -295,6 +295,60 @@ func TestLongTaskAckEnvOverridesYAML(t *testing.T) {
 	}
 }
 
+func TestAgentTaskOnlyDefaultOn(t *testing.T) {
+	withCleanEnv(t)
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AgentTaskOnly {
+		t.Errorf("AgentTaskOnly default = false, want true (safety on by default)")
+	}
+}
+
+func TestAgentTaskOnlyExplicitFalseFromYAML(t *testing.T) {
+	withCleanEnv(t)
+	// Default is true; verify an explicit `task_only: false` disables it.
+	yaml := []byte("ai_agent:\n  task_only: false\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AgentTaskOnly {
+		t.Errorf("YAML task_only: false should disable, got true")
+	}
+}
+
+func TestAgentTaskOnlyUnsetKeepsDefault(t *testing.T) {
+	withCleanEnv(t)
+	// YAML mentions ai_agent but not task_only — must not clobber the default.
+	yaml := []byte("ai_agent:\n  name: claude\n")
+	path := filepath.Join(t.TempDir(), "perch.yaml")
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_EMAIL", "agent@x")
+	t.Setenv("AGENT_AUTH_CODE", "secret")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AgentTaskOnly {
+		t.Errorf("YAML without task_only key should preserve default true, got false")
+	}
+}
+
 func TestParseLogLevel(t *testing.T) {
 	cases := []struct {
 		in   string

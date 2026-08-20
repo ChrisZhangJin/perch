@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -27,14 +28,14 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com", false)
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
 	}
 }
 
 func TestBuildPromptAttachmentHints(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com")
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com", false)
 	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -52,7 +53,7 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 // the simplified-prompt trial concludes.
 /*
 func TestBuildPromptMentionsEmailBody(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
 	for _, want := range []string{
 		"email",
 		"stdout",
@@ -82,7 +83,7 @@ func TestBuildPromptMentionsEmailBody(t *testing.T) {
 // the simplified-prompt trial concludes.
 /*
 func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "do not narrate") {
 		t.Errorf("prompt must contain a 'do not narrate' rule, got:\n%s", p)
@@ -133,7 +134,7 @@ func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
 // the simplified-prompt trial concludes.
 /*
 func TestBuildPromptRequiresGrounding(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
 	low := strings.ToLower(p)
 	// The print-vs-do distinction must be explicit.
 	if !strings.Contains(low, "what you print") || !strings.Contains(low, "what you do") {
@@ -450,7 +451,7 @@ func TestRunClaudeResumeDoesNotFallback(t *testing.T) {
 // different mailbox.
 func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// Default case: agent owns agent_tommy@163.com.
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com", false)
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "hi chris") {
 		t.Errorf("prompt should instruct greeting using fromName=Chris, got:\n%s", p)
@@ -462,7 +463,7 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// sign-off must use "phillip" and must NOT contain "tommy". This is
 	// the regression the user reported: agent on phillip's mailbox was
 	// signing off as "Tommy" because the prompt hardcoded the name.
-	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com")
+	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com", false)
 	if !strings.Contains(p2, "Best,\\nphillip") {
 		t.Errorf("prompt should sign off with derived name 'phillip' for agent_phillip@163.com, got:\n%s", p2)
 	}
@@ -480,7 +481,7 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 // simplified-prompt trial concludes.
 /*
 func TestBuildPromptGreetingFallback(t *testing.T) {
-	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com")
+	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com", false)
 	if !strings.Contains(p, "polite salutation") {
 		t.Errorf("prompt should still mention politeness when fromName is empty, got:\n%s", p)
 	}
@@ -499,7 +500,7 @@ func TestBuildPromptGreetingFallback(t *testing.T) {
 // verdict — only the verdict (well, only the greeting-onwards) should
 // reach the human.
 func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com", false)
 	must := []string{
 		"GREETING PROTOCOL",
 		"Hi <name>,",
@@ -532,7 +533,7 @@ func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
 // failure mode. A regression here means a future edit dropped the contract
 // and the failure will drift back.
 func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com")
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com", false)
 	must := []string{
 		"ATTACHMENT PROTOCOL",
 		"/home/agent/reply", // dir path appears in the numbered steps
@@ -552,9 +553,39 @@ func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
 // when the caller passed replyDir="" (unusual, but possible in tests) would
 // point the agent at a non-existent path.
 func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com", false)
 	if strings.Contains(p, "ATTACHMENT PROTOCOL") {
 		t.Errorf("prompt must NOT include ATTACHMENT PROTOCOL when replyDir is empty, got:\n%s", p)
+	}
+}
+
+// TestBuildPromptSafetyProtocolWhenTaskOnly pins the SAFETY PROTOCOL section's
+// presence and its key contract phrases when taskOnly=true. The section tells
+// the agent to refuse destructive side-requests that aren't the stated task —
+// a light guardrail against email-body-borne injection. If the phrases below
+// silently drop, the guardrail is gone.
+func TestBuildPromptSafetyProtocolWhenTaskOnly(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", true)
+	for _, want := range []string{
+		"SAFETY PROTOCOL",
+		"Always allowed",
+		"Requires the destructive action to BE the stated task",
+		"Judgment rule",
+		"REFUSE that part only",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing SAFETY PROTOCOL phrase %q, got:\n%s", want, p)
+		}
+	}
+}
+
+// TestBuildPromptNoSafetyProtocolWhenTaskOnlyOff confirms the section is
+// gated: an operator who set task_only: false in yaml must not see the
+// SAFETY PROTOCOL block injected.
+func TestBuildPromptNoSafetyProtocolWhenTaskOnlyOff(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", false)
+	if strings.Contains(p, "SAFETY PROTOCOL") {
+		t.Errorf("prompt must NOT include SAFETY PROTOCOL when taskOnly=false, got:\n%s", p)
 	}
 }
 
@@ -572,7 +603,7 @@ func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
 // the simplified-prompt trial concludes.
 /*
 func TestBuildPromptGreetingTimingAfterWork(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com")
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
 	low := strings.ToLower(p)
 	for _, want := range []string{"do all of your tool work first", "only a greeting"} {
 		if !strings.Contains(low, want) {
@@ -619,6 +650,36 @@ func TestStripANSI(t *testing.T) {
 	for _, c := range cases {
 		if got := stripANSI(c.in); got != c.want {
 			t.Errorf("stripANSI(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestWarnIfSensitiveWorkdir pins the sensitive-workdir warning: exact
+// top-level paths trigger a WARN, subpaths and normal user dirs stay quiet.
+// A "log gets a WARN entry" assertion via a buffered handler catches the
+// message; equality-not-prefix is verified by testing /root/workspace which
+// must NOT trigger.
+func TestWarnIfSensitiveWorkdir(t *testing.T) {
+	cases := []struct {
+		workdir string
+		warn    bool
+	}{
+		{"/", true},
+		{"/home", true},
+		{"/root", true},
+		{"/tmp", true},
+		{"/etc", true},
+		{"/root/workspace/perch", false}, // subpath, safe
+		{"/home/alice/agent", false},
+		{"/opt/agent", false},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		warnIfSensitiveWorkdir(c.workdir, log)
+		got := strings.Contains(buf.String(), "sensitive top-level path")
+		if got != c.warn {
+			t.Errorf("workdir=%q warn=%v, want %v; log:\n%s", c.workdir, got, c.warn, buf.String())
 		}
 	}
 }

@@ -38,6 +38,13 @@ ai_agent:
                        #   acceptEdits        — auto-allow file edits
                        #   bypassPermissions  — auto-allow ALL tools
                        #   plan               — read-only planning mode
+  # task_only: true    # DEFAULT true. Injects a SAFETY PROTOCOL section into
+                       # the agent prompt: read-only inspection and any op
+                       # inside cwd are always allowed; destructive actions
+                       # outside cwd (rm, sudo, curl to external hosts,
+                       # package install, etc.) are refused UNLESS destruction
+                       # IS the stated task. A light guardrail against
+                       # email-body-borne side-requests; set false to disable.
 
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone.
