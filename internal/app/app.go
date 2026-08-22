@@ -159,7 +159,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			}
 		}
 
-		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir, a.cfg.Email, a.cfg.AgentTaskOnly)
+		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir, a.cfg.Email, a.cfg.AgentWorkdir, a.cfg.AgentTaskOnly)
 		out, nativeID, err := a.run.Run(ctx, prompt, sid, isNew)
 		if err != nil {
 			a.log.Error("agent run failed", "from", m.From, "err", err)

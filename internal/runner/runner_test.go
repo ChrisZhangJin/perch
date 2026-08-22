@@ -28,14 +28,14 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com", false)
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com", "", false)
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
 	}
 }
 
 func TestBuildPromptAttachmentHints(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com", false)
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com", "", false)
 	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -451,7 +451,7 @@ func TestRunClaudeResumeDoesNotFallback(t *testing.T) {
 // different mailbox.
 func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// Default case: agent owns agent_tommy@163.com.
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com", "", false)
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "hi chris") {
 		t.Errorf("prompt should instruct greeting using fromName=Chris, got:\n%s", p)
@@ -463,7 +463,7 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// sign-off must use "phillip" and must NOT contain "tommy". This is
 	// the regression the user reported: agent on phillip's mailbox was
 	// signing off as "Tommy" because the prompt hardcoded the name.
-	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com", false)
+	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com", "", false)
 	if !strings.Contains(p2, "Best,\\nphillip") {
 		t.Errorf("prompt should sign off with derived name 'phillip' for agent_phillip@163.com, got:\n%s", p2)
 	}
@@ -500,7 +500,7 @@ func TestBuildPromptGreetingFallback(t *testing.T) {
 // verdict — only the verdict (well, only the greeting-onwards) should
 // reach the human.
 func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com", "", false)
 	must := []string{
 		"GREETING PROTOCOL",
 		"Hi <name>,",
@@ -533,7 +533,7 @@ func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
 // failure mode. A regression here means a future edit dropped the contract
 // and the failure will drift back.
 func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "", false)
 	must := []string{
 		"ATTACHMENT PROTOCOL",
 		"/home/agent/reply", // dir path appears in the numbered steps
@@ -553,7 +553,7 @@ func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
 // when the caller passed replyDir="" (unusual, but possible in tests) would
 // point the agent at a non-existent path.
 func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com", false)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com", "", false)
 	if strings.Contains(p, "ATTACHMENT PROTOCOL") {
 		t.Errorf("prompt must NOT include ATTACHMENT PROTOCOL when replyDir is empty, got:\n%s", p)
 	}
@@ -564,18 +564,39 @@ func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
 // the agent to refuse destructive side-requests that aren't the stated task —
 // a light guardrail against email-body-borne injection. If the phrases below
 // silently drop, the guardrail is gone.
+//
+// Also pins the strengthened contract added 2026-08-20 after pi cheerfully
+// executed a `rm ~/foo.rpm` side-request against a workdir of
+// /home/chris/perch: (a) the section is placed BEFORE the Task body so the
+// model reads it before the imperative task text takes over; (b) the exact
+// cwd absolute path is injected so the model has a concrete boundary string
+// to compare against; (c) the "delete outside cwd" failure mode is spelled
+// out as a concrete example the model must not replicate.
 func TestBuildPromptSafetyProtocolWhenTaskOnly(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", true)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/home/chris/perch", true)
 	for _, want := range []string{
 		"SAFETY PROTOCOL",
 		"Always allowed",
-		"Requires the destructive action to BE the stated task",
+		"You MUST refuse",
 		"Judgment rule",
 		"REFUSE that part only",
+		"/home/chris/perch",     // cwd absolute path is injected
+		"~/foo.rpm",             // concrete failure-mode example
+		"Concrete example",      // header for the example block
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing SAFETY PROTOCOL phrase %q, got:\n%s", want, p)
 		}
+	}
+	// SAFETY must come BEFORE the Task body so the model reads guardrails
+	// before it locks onto the imperative task text.
+	safetyAt := strings.Index(p, "SAFETY PROTOCOL")
+	taskAt := strings.Index(p, "Task:")
+	if safetyAt < 0 || taskAt < 0 {
+		t.Fatalf("prompt missing SAFETY PROTOCOL or Task: markers, got:\n%s", p)
+	}
+	if safetyAt >= taskAt {
+		t.Errorf("SAFETY PROTOCOL must appear before Task: (safety at %d, task at %d), got:\n%s", safetyAt, taskAt, p)
 	}
 }
 
@@ -583,7 +604,7 @@ func TestBuildPromptSafetyProtocolWhenTaskOnly(t *testing.T) {
 // gated: an operator who set task_only: false in yaml must not see the
 // SAFETY PROTOCOL block injected.
 func TestBuildPromptNoSafetyProtocolWhenTaskOnlyOff(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", false)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/tmp/wd", false)
 	if strings.Contains(p, "SAFETY PROTOCOL") {
 		t.Errorf("prompt must NOT include SAFETY PROTOCOL when taskOnly=false, got:\n%s", p)
 	}
