@@ -189,3 +189,49 @@ func TestEnsureInteractiveAuthcodeNotEchoed(t *testing.T) {
 		t.Error("wizard must use the injected password function (ReadPassword-style), not Fscanln, for the auth code")
 	}
 }
+
+// TestEnsureInteractiveAllowFromDefaultIsWildlet pins the onboarding
+// default: when the operator hits Enter at the allow_from prompt with no
+// current value, the wizard writes ["*"] (the gate's accept-everyone
+// sentinel) — not "[]" — so perch actually accepts mail on a fresh install.
+//
+// Regression for the user-reported bug: prior behaviour wrote
+// allow_from: [] to disk, which the gate then treated as "deny everyone"
+// and silently dropped every inbound message.
+func TestEnsureInteractiveAllowFromDefaultIsWildlet(t *testing.T) {
+	interactiveStdin(t)
+	cfg := &config.Config{} // fresh install: every field missing
+	// Wizard prompts (in order): provider, agent, workdir, perm_mode,
+	// log_level, allow_from, email. Six Enter's accept the default for
+	// each, then we type the email on the seventh line.
+	in := strings.NewReader("\n\n\n\n\n\nagent@x.com\n")
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	pw := func(int) ([]byte, error) { return []byte("pw"), nil }
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := Ensure(cfg, in, out, errOut, pw); err != nil {
+		t.Fatalf("Ensure: %v\nstderr:\n%s", err, errOut.String())
+	}
+	if len(cfg.AllowFrom) != 1 || cfg.AllowFrom[0] != "*" {
+		t.Errorf("cfg.AllowFrom = %#v, want [\"*\"] (wizard default for empty current value)", cfg.AllowFrom)
+	}
+
+	// Persisted file must contain `allow_from:\n  - "*"`, NOT `allow_from: []` —
+	// the whole point of this fix is what hits disk. The entry is quoted
+	// in the YAML because bare `*` is the YAML alias indicator and the
+	// strict parser rejects it; gate.New sees it as the literal string "*".
+	cfgPath := filepath.Join(tmpHome, ".perch", "perch.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `allow_from:`) || !strings.Contains(body, `"*"`) {
+		t.Errorf("persisted file missing `allow_from: [\"*\"]` line, got:\n%s", body)
+	}
+	if strings.Contains(body, "allow_from: []") {
+		t.Errorf("persisted file must NOT contain `allow_from: []` (that's deny-all), got:\n%s", body)
+	}
+}

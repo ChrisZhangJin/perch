@@ -94,7 +94,7 @@ perch 从三层加载配置,优先级由高到低:
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | perch 监听的邮箱。环境变量优先,否则读 YAML 里的 `email:`(首次运行向导写入)。 |
 | `AGENT_AUTH_CODE` | ✅ | — | 邮箱**授权码**(163 授权码),**不是**登录密码。只能从环境变量注入,绝不写盘。 |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人;为空 = **拒绝所有人**。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`、`s".*agent.*@qq\.com"`、`s"(?i).+@trusted\.org"`)。正则启动时编译,坏正则立刻让 gate 构建失败(perch 绝不在 fail-open 状态下启动)。`ALLOW_FROM` 环境变量只承载字面量。 |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | 列表 / 逗号分隔的允许发件人。字面量 `*` 表示**接受所有人**(这是 setup 向导写入的 onboarding 默认值,上线前请收紧);否则空列表 = **拒绝所有人**(fail-closed,env-only 部署下的安全默认值)。YAML 条目可以是字面量 (`alice@163.com`),也可以是 `s"..."` 包裹的正则(如 `s".+@(foo\|bar)\.example\.com"`、`s".*agent.*@qq\.com"`、`s"(?i).+@trusted\.org"`)。正则启动时编译,坏正则立刻让 gate 构建失败(perch 绝不在 fail-open 状态下启动)。`ALLOW_FROM` 环境变量只承载字面量。 |
 | `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — 自动推导端点 |
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — 自动推导二进制 |
 | `ai_agent.workdir`          | —                 | `.`              | 拉起的 agent 工作目录 |

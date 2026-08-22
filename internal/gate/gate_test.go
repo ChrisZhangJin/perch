@@ -100,3 +100,64 @@ func TestFirstSight(t *testing.T) {
 		t.Error("new id should be true")
 	}
 }
+
+// TestAllowedAcceptAllWildlet pins the literal "*" accept-everyone
+// sentinel. This is the onboarding default the wizard writes when the
+// operator hits Enter on the allow_from prompt.
+func TestAllowedAcceptAllWildlet(t *testing.T) {
+	g, err := New([]string{"*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{
+		"alice@163.com",
+		"bob@126.com",
+		"anyone@anywhere.com",
+		"x@y",
+	} {
+		if !g.Allowed(from) {
+			t.Errorf("Allowed(%q) with [*] = false, want true", from)
+		}
+	}
+	// Empty from is still rejected — `*` accepts everyone with a known
+	// address, not the empty/missing case.
+	if g.Allowed("") {
+		t.Error("Allowed(\"\") with [*] = true, want false (empty from is rejected even in allow-all mode)")
+	}
+}
+
+// TestAllowedAcceptAllMixedWithLiteral pins that `*` mixed with concrete
+// literals still means "everyone allowed". Keeping the concrete entries
+// in the list means an operator who edits a wizard-written file doesn't
+// have to strip the literals just to re-enable allow-all.
+func TestAllowedAcceptAllMixedWithLiteral(t *testing.T) {
+	g, err := New([]string{"*", "bob@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{"bob@example.com", "carol@elsewhere.org", ""} {
+		got := g.Allowed(from)
+		want := from != "" // every non-empty passes
+		if got != want {
+			t.Errorf("Allowed(%q) with [*, bob@…] = %v, want %v", from, got, want)
+		}
+	}
+}
+
+// TestAllowedEmptyStillDenies is the regression guard for the fail-closed
+// property. Empty / nil whitelist must still reject every non-empty
+// sender — this is the safe default for env-only / headless setups that
+// never went through the wizard.
+func TestAllowedEmptyStillDenies(t *testing.T) {
+	for _, in := range [][]string{nil, {}, {"", "   "}} {
+		g, err := New(in)
+		if err != nil {
+			t.Fatalf("New(%v): %v", in, err)
+		}
+		for _, from := range []string{"alice@163.com", "anyone@anywhere.com"} {
+			if g.Allowed(from) {
+				t.Errorf("New(%v).Allowed(%q) = true, want false (empty whitelist must deny)", in, from)
+			}
+		}
+	}
+}

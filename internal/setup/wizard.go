@@ -55,10 +55,11 @@ func MissingFields(cfg *config.Config) []string {
 
 // missingFields returns the cfg field names that still need to be populated.
 // AllowFrom is intentionally NOT here — the wizard prompts for it on
-// interactive first run and persists it to the YAML file, but for
-// headless (env-vars-only) setups an empty allow_from means "deny all"
-// which is the safe default (perch logs WARN and ignores non-whitelisted
-// senders), so we don't block startup over it.
+// interactive first run and persists a `["*"]` accept-all entry to the
+// YAML file as the onboarding default. For headless (env-vars-only) setups
+// an empty allow_from means "deny all" (fail-closed, the safe default
+// for non-wizard deployments); perch logs WARN and ignores non-whitelisted
+// senders. Either way we don't block startup over it.
 func missingFields(cfg *config.Config) []string {
 	var m []string
 	if cfg.Email == "" {
@@ -119,10 +120,17 @@ func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) e
 	cfg.AgentWorkdir = prompt(in, out, "Agent workdir", cfg.AgentWorkdir, ".")
 	cfg.AgentPermMode = prompt(in, out, "Agent permission mode (claude only)", cfg.AgentPermMode, "acceptEdits")
 	cfg.LogLevel = prompt(in, out, "Log level", cfg.LogLevel, "debug / info / warn / error")
-	allowRaw := prompt(in, out, "Allow senders (comma-separated, empty = deny all)", joinList(cfg.AllowFrom), "")
-	if allowRaw != "" {
-		cfg.AllowFrom = splitAndTrim(allowRaw)
+	// allow_from default: when the operator is running the wizard for the
+	// first time the cfg has no entries yet, so show `*` (the accept-all
+	// sentinel gate.New recognizes) as the bracket default. When re-running
+	// the wizard with an existing cfg, surface the current value so an
+	// accidental Enter doesn't silently open the gate.
+	allowDef := "*"
+	if len(cfg.AllowFrom) > 0 {
+		allowDef = joinList(cfg.AllowFrom)
 	}
+	allowRaw := prompt(in, out, "Allow senders (comma-separated; default = accept all)", allowDef, "")
+	cfg.AllowFrom = splitAndTrim(allowRaw)
 	cfg.Email = prompt(in, out, "Agent email (env var AGENT_EMAIL overrides; otherwise saved here)", cfg.Email, "")
 
 	fmt.Fprint(out, "Mailbox authorization code (env var AGENT_AUTH_CODE; not written to disk):\nPassword: ")
@@ -262,8 +270,10 @@ func persist(cfg *config.Config) error {
 		"  workdir: " + cfg.AgentWorkdir + "\n" +
 		"  permission_mode: " + cfg.AgentPermMode + "   # claude only; nanopi/pi ignore\n\n" +
 		"# --- Whitelist ---\n" +
-		"# ONLY these senders can wake the agent. Empty list = deny everyone.\n" +
-		"# Each entry is a literal address, or a regex prefixed with s\"...\"\n" +
+		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
+		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +
+		"# writes this as the onboarding default — tighten before going live).\n" +
+		"# Each other entry is a literal address, or a regex prefixed with s\"...\"\n" +
 		"# Use ALLOW_FROM env var for literals only (regexes belong in this file).\n" +
 		"allow_from:\n" +
 		formatAllowFrom(allowFrom) + "\n" +
@@ -294,7 +304,15 @@ func persist(cfg *config.Config) error {
 }
 
 // formatAllowFrom renders an AllowFrom slice as YAML list items. Empty
-// slices produce an empty list body (operator can leave it empty = deny all).
+// slices produce an empty list body (operator can leave it empty = deny
+// all, fail-closed for non-wizard setups). The wizard never writes `[]`
+// itself — it writes `["*"]` so onboarding defaults to accept-all.
+//
+// Entries that look like YAML scalars with special meaning (currently
+// just the bare `*`, which is the YAML alias indicator and trips the
+// strict parser) are quoted on the way out; gate.New strips the quotes
+// (it never sees them — yaml.v3 hands the decoded string back as "*").
+// Literal addresses and `s"..."` regexes never need quoting.
 func formatAllowFrom(items []string) string {
 	if len(items) == 0 {
 		return "  []\n"
@@ -302,7 +320,11 @@ func formatAllowFrom(items []string) string {
 	var b strings.Builder
 	for _, a := range items {
 		b.WriteString("  - ")
-		b.WriteString(a)
+		if a == "*" {
+			b.WriteString(`"*"`)
+		} else {
+			b.WriteString(a)
+		}
 		b.WriteByte('\n')
 	}
 	return b.String()

@@ -107,6 +107,33 @@ allow_from:
 	}
 }
 
+// TestLoadAcceptAllWildlet pins the YAML round-trip for the `*` literal
+// sentinel (gate's accept-everyone marker). Bare `*` is the YAML alias
+// indicator and the strict parser rejects it — the wizard writes it
+// quoted as `"*"` so this test stays green. If yaml.v3 ever changes
+// behaviour around the alias character, this fails loudly instead of
+// silently breaking the onboarding default.
+func TestLoadAcceptAllWildlet(t *testing.T) {
+	withCleanEnv(t)
+	for _, body := range []string{
+		"allow_from:\n  - \"*\"\n", // wizard output (quoted, safe)
+		"allow_from:\n  - '*'\n",   // single-quoted form, equally safe
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "perch.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if len(cfg.AllowFrom) != 1 || cfg.AllowFrom[0] != "*" {
+			t.Errorf("Load(%s): AllowFrom = %#v, want [*]", body, cfg.AllowFrom)
+		}
+	}
+}
+
 func TestLoadEnvOverridesYAML(t *testing.T) {
 	withCleanEnv(t)
 	yaml := []byte(`

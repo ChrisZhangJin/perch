@@ -47,10 +47,15 @@ ai_agent:
                        # email-body-borne side-requests; set false to disable.
 
 # --- Whitelist -------------------------------------------------------------
-# ONLY these senders can wake the agent. Empty list = deny everyone.
+# ONLY these senders can wake the agent. Empty list = deny everyone
+# (fail-closed, the safe default for env-only setups that never went
+# through the wizard). A literal `*` entry accepts everyone — that's
+# the onboarding default the setup wizard writes; tighten before going
+# live on a real mailbox.
 # Comma-separated when set via the ALLOW_FROM env var; YAML uses a real list.
 # Each entry is either a literal address or a regex wrapped in `s"..."`:
 #
+#   - "*"                            # literal: accept everyone (wizard default)
 #   - alice@163.com                   # literal (case-insensitive exact match)
 #   - s".+@(foo|bar)\.example\.com"  # regex: any user on foo/bar .example.com
 #   - s".*agent.*@qq\.com"           # regex: contains "agent" substring pattern
@@ -59,7 +64,8 @@ ai_agent:
 # Regexes are compiled at startup; a bad pattern fails the gate immediately
 # (perch never starts in a fail-open state). The `s` prefix and matching
 # trailing `"` are required — without them, the entry is treated as a
-# literal address, NOT a regex.
+# literal address, NOT a regex. The bare `*` MUST be quoted in YAML
+# (`"*"`), because unquoted `*` is the YAML alias indicator.
 #
 # Use ALLOW_FROM env var for literals only (regexes belong in the YAML file).
 allow_from:
@@ -67,6 +73,7 @@ allow_from:
   - s".*agent.*@qq\.com"
   # - bob@example.com
   # - s".+@(foo|bar)\.example\.com"
+  # - "*"                          # uncomment to accept everyone
 
 # --- Loop timing -----------------------------------------------------------
 poll_interval: 60s                       # POLL_INTERVAL (poll tick / IDLE keepalive)

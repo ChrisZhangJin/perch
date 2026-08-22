@@ -100,7 +100,7 @@ from the YAML file.
 |---|:---:|---|---|
 | `AGENT_EMAIL` | ✅ | — | the mailbox perch watches. Env wins; otherwise read from `email:` in YAML (written by setup wizard). |
 | `AGENT_AUTH_CODE` | ✅ | — | mailbox auth code (163 授权码), **not** the login password. Env-only — never written to disk. |
-| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders; empty = **deny all**. YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`, `s".*agent.*@qq\.com"`, `s"(?i).+@trusted\.org"`). Regexes are compiled at startup; a bad pattern fails the gate immediately (perch never starts in a fail-open state). `ALLOW_FROM` env var carries only literals. |
+| `allow_from` / `ALLOW_FROM` | ⚠️ | — | list / comma-separated allowed senders. A literal `*` entry accepts everyone (this is the onboarding default the setup wizard writes — tighten before going live); otherwise empty list = **deny all** (fail-closed, the safe default for env-only setups). YAML entries can be literals (`alice@163.com`) or regexes wrapped in `s"..."` (e.g. `s".+@(foo\|bar)\.example\.com"`, `s".*agent.*@qq\.com"`, `s"(?i).+@trusted\.org"`). Regexes are compiled at startup; a bad pattern fails the gate immediately (perch never starts in a fail-open state). `ALLOW_FROM` env var carries only literals. |
 | `email_provider.name`       | —                 | `163`            | `163` / `126` / `qq` — endpoints derived |
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — binary derived |
 | `ai_agent.workdir`          | —                 | `.`              | cwd for the spawned agent |
