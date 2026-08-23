@@ -65,7 +65,9 @@ Three structs, each ~10–30 lines, lifted verbatim from `internal/app/app_test.
 - **`ScriptedRunner`** — `outs []string` (canned stdout per call),
   `prompts []string`, `sids []string`, `isNews []bool` (recorded). `Run`
   returns `outs[i]` for call `i`; overflow reuses the last entry (defensive
-  against miscount assertions).
+  against miscount assertions). Also has a settable `Native string` field —
+  when non-empty, returned as the second value (`nativeID`) of `Run`. This
+  preserves the existing `TestProcessAdoptsNativeSessionID` coverage.
 
 ### `internal/mailtest/mailtest.go`
 
@@ -107,11 +109,12 @@ func New(cfg *config.Config, allowFrom []string, run app.TaskRunner) (*Mailtest,
 // Multipart / attachment messages use SendRaw.
 func (m *Mailtest) Send(from, to, subject, body string) (uint32, error)
 
-// SendRaw queues pre-built RFC822 bytes under the given UID (must be > 0; the
-// harness assigns the UID on behalf of Send so it can keep monotonic ordering
-// — if you need a specific UID, set FakeMailbox.nextUID first via the
-// internal helper). Use this for attachments, unusual Content-Types, or to
-// reuse canned .eml fixtures from tests.
+// SendRaw queues pre-built RFC822 bytes under the given UID (must be > 0;
+// UID 0 is reserved for "unassigned"). The harness does NOT enforce monotonic
+// ordering across SendRaw calls — callers that mix Send (auto-assigns) and
+// SendRaw (caller-chosen) are responsible for choosing UIDs that don't
+// collide with auto-assigned ones. Use this for attachments, unusual
+// Content-Types, or to reuse canned .eml fixtures from tests.
 func (m *Mailtest) SendRaw(uid uint32, raw []byte) error
 
 // RunOnce calls app.ProcessUnseen once. ctx-cancel aware. Errors propagate
