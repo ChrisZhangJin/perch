@@ -65,6 +65,15 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log, triggers: triggers}
 }
 
+// SessForTest returns the session registry wired into this App. Test-only;
+// production code does not need this accessor because it works through the
+// ProcessUnseen loop.
+func (a *App) SessForTest() *session.Registry { return a.sess }
+
+// Cfg exposes the config so tests can flip fields (e.g. cfg.LongTaskAck)
+// after construction.
+func (a *App) Cfg() *config.Config { return a.cfg }
+
 // ProcessUnseen fetches and handles every currently-unseen message:
 // parse -> dedup -> whitelist -> session -> run claude -> reply -> mark seen.
 // Inbound attachments are saved under <workdir>/attachments/<msg-id>/ and the
