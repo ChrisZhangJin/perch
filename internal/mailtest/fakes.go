@@ -26,15 +26,21 @@ type FakeMailbox struct {
 }
 
 // Enqueue appends data to the mailbox queue. If uid is 0, the next sequential
-// UID is assigned (starting at 1); otherwise the caller-chosen uid is used.
+// UID is assigned; the first auto-assigned UID is 1 (UID 0 is reserved for
+// "unassigned" by SendRaw's validation). Otherwise the caller-chosen uid is
+// used and nextUID is advanced past it so subsequent auto-assignments don't
+// collide.
 func (f *FakeMailbox) Enqueue(uid uint32, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if uid == 0 {
+		if f.nextUID == 0 {
+			f.nextUID = 1
+		}
 		uid = f.nextUID
 		f.nextUID++
-	} else if uid > f.nextUID {
-		f.nextUID = uid
+	} else if uid >= f.nextUID {
+		f.nextUID = uid + 1
 	}
 	f.msgs = append(f.msgs, mailbox.Raw{UID: uid, Data: data})
 }
