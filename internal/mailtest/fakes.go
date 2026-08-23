@@ -90,13 +90,18 @@ func (s *FakeSender) Reply(to, subject, inReplyTo string, refs []string, body st
 	return nil
 }
 
-// Replies returns a snapshot copy of the recorded replies. Mutating the
-// returned slice does not affect later Replies calls.
+// Replies returns a deep-copy snapshot of the recorded replies. Mutating any
+// field of a returned Reply (including inner slice fields like References and
+// Attachments) does not affect later Replies calls.
 func (s *FakeSender) Replies() []Reply {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Reply, len(s.replies))
 	copy(out, s.replies)
+	for i := range out {
+		out[i].References = append([]string{}, out[i].References...)
+		out[i].Attachments = append([]string{}, out[i].Attachments...)
+	}
 	return out
 }
 

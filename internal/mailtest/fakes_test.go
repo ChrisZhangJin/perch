@@ -115,7 +115,8 @@ func TestFakeSenderRecordsInOrder(t *testing.T) {
 		rs[0].Body != "first" || len(rs[0].Attachments) != 1 || rs[0].Attachments[0] != "/tmp/a.txt" {
 		t.Errorf("Reply[0]: %+v", rs[0])
 	}
-	if rs[1].To != "bob@x" || rs[1].InReplyTo != "<r2@x>" || len(rs[1].References) != 0 ||
+	if rs[1].To != "bob@x" || rs[1].Subject != "Re: hello" || rs[1].InReplyTo != "<r2@x>" ||
+		len(rs[1].References) != 0 ||
 		rs[1].Body != "second" || len(rs[1].Attachments) != 0 {
 		t.Errorf("Reply[1]: %+v", rs[1])
 	}
@@ -129,6 +130,25 @@ func TestFakeSenderRepliesReturnsCopy(t *testing.T) {
 	r2 := s.Replies()
 	if r2[0].Body != "b" {
 		t.Errorf("Replies must return a copy; got mutated body %q", r2[0].Body)
+	}
+}
+
+func TestFakeSenderRepliesDeepCopiesInnerSlices(t *testing.T) {
+	s := &FakeSender{}
+	_ = s.Reply("a@x", "s", "<r@x>", []string{"<r@x>"}, "b", []string{"/tmp/x"})
+	r := s.Replies()
+	// Mutate inner slices in the snapshot.
+	r[0].References[0] = "MUTATED"
+	r[0].References = append(r[0].References, "EXTRA")
+	r[0].Attachments[0] = "/tmp/mutated"
+	r[0].Attachments = append(r[0].Attachments, "/tmp/extra")
+	// Get a fresh snapshot — inner slices must be isolated.
+	r2 := s.Replies()
+	if r2[0].References[0] != "<r@x>" || len(r2[0].References) != 1 {
+		t.Errorf("References leaked: %v", r2[0].References)
+	}
+	if r2[0].Attachments[0] != "/tmp/x" || len(r2[0].Attachments) != 1 {
+		t.Errorf("Attachments leaked: %v", r2[0].Attachments)
 	}
 }
 
