@@ -2,14 +2,11 @@ package mailtest
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
-	plog "github.com/ChrisZhangJin/perch/internal/log"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 )
 
@@ -207,10 +204,6 @@ func TestScriptedRunnerReturnsNativeWhenSet(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Mailtest harness tests
 // ---------------------------------------------------------------------------
-
-func newSilentLogger() *slog.Logger {
-	return slog.New(plog.New(os.Stderr, slog.LevelError))
-}
 
 func TestMailtestSendValidatesFrom(t *testing.T) {
 	cfg := &config.Config{MaxPromptBytes: 4096, AgentWorkdir: t.TempDir()}

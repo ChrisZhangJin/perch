@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ func New(cfg *config.Config, allowFrom []string, run app.TaskRunner) (*Mailtest,
 		return nil, fmt.Errorf("mailtest: gate: %w", err)
 	}
 
-	sessPath := cfg.AgentWorkdir + "/mailtest-sessions.json"
+	sessPath := filepath.Join(cfg.AgentWorkdir, "mailtest-sessions.json")
 	sess, err := session.Load(sessPath)
 	if err != nil {
 		return nil, fmt.Errorf("mailtest: session: %w", err)
