@@ -203,8 +203,30 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			}
 		}
 
-		prompt := runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir, a.cfg.Email, a.cfg.AgentWorkdir, a.cfg.AgentTaskOnly)
-		out, nativeID, err := a.run.Run(ctx, prompt, sid, isNew)
+		// buildPrompt is a closure so the cold-retry path below can rebuild
+		// with contracts forced on. Passing cold=true means "this run opens
+		// a fresh agent session", which is what decides whether the format
+		// contracts must be included.
+		buildPrompt := func(cold bool) string {
+			return runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir,
+				a.cfg.Email, a.cfg.AgentWorkdir, runner.PromptOpts{
+					TaskOnly:  a.cfg.AgentTaskOnly,
+					Contracts: a.cfg.ContractsFor(cold),
+				})
+		}
+
+		out, nativeID, err := a.run.Run(ctx, buildPrompt(isNew), sid, isNew)
+		// A resume can fail because the stored session id no longer maps to
+		// a live agent session. The thread is still serviceable from a cold
+		// session, but the prompt we just sent was built for a warm one and
+		// may omit the format contracts — so rebuild before retrying, or the
+		// agent starts fresh never having seen the ATTACHMENT PROTOCOL and
+		// silently drops file replies.
+		if errors.Is(err, runner.ErrSessionLost) && !isNew {
+			a.log.Warn("session lost; retrying with a cold session and full contracts",
+				"from", m.From, "stale_sid", sid)
+			out, nativeID, err = a.run.Run(ctx, buildPrompt(true), "", true)
+		}
 		if err != nil {
 			a.log.Error("agent run failed", "from", m.From, "err", err)
 			_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
@@ -252,7 +274,9 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			if nativeID != "" {
 				retrySid = nativeID
 			}
-			if out2, nativeID2, rerr := a.run.Run(ctx, prompt, retrySid, false); rerr != nil {
+			// cold=false: retrySid names a session the agent just took a turn
+			// in, so the contracts are already in its history.
+			if out2, nativeID2, rerr := a.run.Run(ctx, buildPrompt(false), retrySid, false); rerr != nil {
 				a.log.Error("agent retry failed", "from", m.From, "err", rerr)
 			} else {
 				out = out2

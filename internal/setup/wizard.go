@@ -263,6 +263,9 @@ func persist(cfg *config.Config) error {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = def.LogLevel
 	}
+	if cfg.PromptContracts == "" {
+		cfg.PromptContracts = def.PromptContracts
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -285,6 +288,18 @@ func persist(cfg *config.Config) error {
 		"  # the stated task. A light guardrail against side-requests smuggled\n" +
 		"  # into an email body. Set false to disable.\n" +
 		"  task_only: " + strconv.FormatBool(cfg.AgentTaskOnly) + "\n\n" +
+		"# --- Prompt ---\n" +
+		"# contracts: when to send the format-contract sections (reply framing,\n" +
+		"# GREETING PROTOCOL, ATTACHMENT PROTOCOL) — roughly 1.8 KB per email.\n" +
+		"#   on_resume — DEFAULT. Only when opening a new agent session; a\n" +
+		"#               resumed session already has them in its replayed\n" +
+		"#               history, and repeating them compounds because every\n" +
+		"#               turn is persisted and re-read on later resumes.\n" +
+		"#   always    — repeat on every email; use if long threads drift\n" +
+		"#               out of reply format.\n" +
+		"# The SAFETY PROTOCOL (ai_agent.task_only) is never affected by this.\n" +
+		"prompt:\n" +
+		"  contracts: " + cfg.PromptContracts + "\n\n" +
 		"# --- Whitelist ---\n" +
 		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
 		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +

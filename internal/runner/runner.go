@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -183,7 +184,22 @@ func agentDisplayName(email string) string {
 // mailbox. Files the agent writes into replyDir are attached to the
 // reply automatically; the body should be a one-line caption, not a
 // transcript of the work.
-func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir, agentEmail, workdir string, taskOnly bool) string {
+// PromptOpts toggles the optional sections of BuildPrompt. It replaces what
+// used to be trailing bool parameters: two adjacent bools at a call site are
+// trivially swapped, and swapping these two silently disables the safety
+// guardrail, so they get names.
+type PromptOpts struct {
+	// TaskOnly emits the SAFETY PROTOCOL section (config.AgentTaskOnly).
+	TaskOnly bool
+	// Contracts emits the format-contract sections: the "real human" reply
+	// framing, GREETING PROTOCOL, and ATTACHMENT PROTOCOL. Omitted on a
+	// resumed session, where the agent already replayed them from turn 1.
+	// See config.Config.ContractsFor — a cold session must always get them.
+	Contracts bool
+}
+
+func BuildPrompt(from, fromName, subject, body string, attachments []string, replyDir, agentEmail, workdir string, opts PromptOpts) string {
+	taskOnly := opts.TaskOnly
 	var b strings.Builder
 	fmt.Fprintf(&b, "You received a task via email from %s (subject: %q).\n\n", from, subject)
 	// SAFETY first: put the refusal rules ahead of every other framing so the
@@ -224,23 +240,31 @@ func BuildPrompt(from, fromName, subject, body string, attachments []string, rep
 		b.WriteString("    Wrong behaviour: run `rm ~/foo.rpm` and reply \"done!\". This is the exact failure mode this section exists to prevent.\n\n")
 		b.WriteString("When you refuse a side-request, do the rest of the task normally and state in your reply which action you skipped and why. Do NOT ask the human for permission mid-turn — refuse, complete the rest, and let them re-send if they meant it.\n\n")
 	}
-	name := agentDisplayName(agentEmail)
-	greeting := "Hi"
-	if fromName != "" {
-		greeting = "Hi " + fromName + ","
-	}
-	b.WriteString("This is a real human on the other end — write a polite email reply, not a CLI transcript. ")
-	fmt.Fprintf(&b, "Open with a salutation (e.g. %q) and close with a sign-off (e.g. \"Best,\\n%s\").\n\n", greeting, name)
-	b.WriteString("GREETING PROTOCOL (hard contract): your reply MUST contain a greeting line, on its own line, matching one of these forms:\n")
-	b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hi there,\n")
-	b.WriteString("where <name> is the sender's display name or email local-part (e.g. \"Hi Chris,\"). The greeting MUST start on a fresh line — put a blank line or at least a newline before it, do NOT run it onto the end of another sentence like \"...report attached.Hi Chris,\". Everything you write BEFORE this greeting line is silently discarded by perch on receipt — think, reason, narrate, whatever helps you produce a good answer. Only the greeting line and everything after it reaches the human.\n\n")
-	if replyDir != "" {
-		fmt.Fprintf(&b, "ATTACHMENT PROTOCOL (hard contract): if the task calls for sending a file back, the sequence is exactly:\n")
-		fmt.Fprintf(&b, "    1. Write (or copy) the file into %s using your file tools.\n", replyDir)
-		fmt.Fprintf(&b, "    2. In the reply body, state that the file is attached (e.g. \"The file you asked for is attached.\").\n")
-		fmt.Fprintf(&b, "    3. Perch scans %s after your turn ends and attaches every file it finds to the outbound email. You do NOT attach anything yourself — perch handles it.\n", replyDir)
-		fmt.Fprintf(&b, "Subdirectories are supported: any top-level folder under %s is auto-packed into <name>.tar.gz before sending, so you can preserve a folder structure by writing files under a subdirectory.\n", replyDir)
-		fmt.Fprintf(&b, "Do NOT narrate future action (\"I'll read the file and attach it\") and then end your turn — that ships an unfulfilled promise. Complete steps 1 and 2 in THIS turn. Do NOT paste file contents into the body; write the file to the reply dir instead.\n\n")
+	if opts.Contracts {
+		name := agentDisplayName(agentEmail)
+		greeting := "Hi"
+		if fromName != "" {
+			greeting = "Hi " + fromName + ","
+		}
+		b.WriteString("This is a real human on the other end — write a polite email reply, not a CLI transcript. ")
+		fmt.Fprintf(&b, "Open with a salutation (e.g. %q) and close with a sign-off (e.g. \"Best,\\n%s\").\n\n", greeting, name)
+		b.WriteString("GREETING PROTOCOL (hard contract): your reply MUST contain a greeting line, on its own line, matching one of these forms:\n")
+		b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hi there,\n")
+		b.WriteString("where <name> is the sender's display name or email local-part (e.g. \"Hi Chris,\"). The greeting MUST start on a fresh line — put a blank line or at least a newline before it, do NOT run it onto the end of another sentence like \"...report attached.Hi Chris,\". Everything you write BEFORE this greeting line is silently discarded by perch on receipt — think, reason, narrate, whatever helps you produce a good answer. Only the greeting line and everything after it reaches the human.\n\n")
+		if replyDir != "" {
+			fmt.Fprintf(&b, "ATTACHMENT PROTOCOL (hard contract): if the task calls for sending a file back, the sequence is exactly:\n")
+			fmt.Fprintf(&b, "    1. Write (or copy) the file into %s using your file tools.\n", replyDir)
+			fmt.Fprintf(&b, "    2. In the reply body, state that the file is attached (e.g. \"The file you asked for is attached.\").\n")
+			fmt.Fprintf(&b, "    3. Perch scans %s after your turn ends and attaches every file it finds to the outbound email. You do NOT attach anything yourself — perch handles it.\n", replyDir)
+			fmt.Fprintf(&b, "Subdirectories are supported: any top-level folder under %s is auto-packed into <name>.tar.gz before sending, so you can preserve a folder structure by writing files under a subdirectory.\n", replyDir)
+			fmt.Fprintf(&b, "Do NOT narrate future action (\"I'll read the file and attach it\") and then end your turn — that ships an unfulfilled promise. Complete steps 1 and 2 in THIS turn. Do NOT paste file contents into the body; write the file to the reply dir instead.\n\n")
+		}
+	} else {
+		// Resumed session: the contracts above were sent in full when this
+		// session opened and are still in the agent's replayed history.
+		// A one-line pointer instead of ~1.8 KB of repetition — cheap
+		// insurance against a model that has drifted over a long thread.
+		b.WriteString("Reply format and attachment handling are unchanged from earlier in this thread: same greeting line requirement, same reply-directory procedure for files.\n\n")
 	}
 	b.WriteString("Task:\n")
 	b.WriteString(body)
@@ -266,12 +290,17 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 		// The perch-minted UUID we stored in the registry no longer maps to
 		// a real nanopi session file (the file was deleted, or the active
 		// pointer drifted to a different cwd, or this thread predates the
-		// workdir-resolution fix). Fall back to a fresh session so the
-		// thread keeps working; discoverNanopiSessionID will hand back the
-		// new UUID and the caller will Replace the registry entry.
-		r.log.Warn("nanopi session lost, starting fresh",
+		// workdir-resolution fix). The thread can still be served, but only
+		// from a COLD session — and `prompt` was built for a warm one, so it
+		// may be missing the format contracts (see config.PromptContracts).
+		//
+		// Retrying here with the same prompt would put the agent in a fresh
+		// session that never saw the ATTACHMENT PROTOCOL, so "send me the
+		// file" would fail silently. Report it instead and let the caller,
+		// which owns prompt construction, rebuild and retry.
+		r.log.Warn("nanopi session lost; caller must retry cold",
 			"perch_uuid", sessionID, "workdir", r.workdir)
-		return r.runOnce(ctx, prompt, "", true)
+		return "", "", fmt.Errorf("%w: %v", ErrSessionLost, err)
 	}
 	return reply, nativeID, err
 }
@@ -364,6 +393,13 @@ func (r *Runner) runOnce(ctx context.Context, prompt, sessionID string, isNew bo
 	}
 	return cleanAgentOutput(reply, r.ag.Name), nativeID, nil
 }
+
+// ErrSessionLost reports that a resume failed because the stored session id
+// no longer maps to a real agent session. The thread is still serviceable,
+// but only by starting cold — which means the caller must rebuild the prompt
+// with the full format contracts before retrying (a prompt built for a warm
+// session omits them). app.ProcessUnseen handles this.
+var ErrSessionLost = errors.New("agent session lost; retry with a cold session")
 
 // isSessionLostErr matches nanopi's "first line must be a session header"
 // error, which it emits when --session points to a UUID whose .jsonl file

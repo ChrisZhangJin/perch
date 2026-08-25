@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -28,14 +29,14 @@ func writeStub(t *testing.T, body string) (bin, argfile string) {
 }
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "please do X", nil, "", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	if !strings.Contains(p, "alice@163.com") || !strings.Contains(p, "Do X") || !strings.Contains(p, "please do X") {
 		t.Errorf("prompt missing fields: %q", p)
 	}
 }
 
 func TestBuildPromptAttachmentHints(t *testing.T) {
-	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("alice@163.com", "Alice", "Do X", "body", []string{"/tmp/att/app.log", "/tmp/att/notes.txt"}, "/home/agent/reply", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	for _, want := range []string{"/tmp/att/app.log", "/tmp/att/notes.txt", "/home/agent/reply"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -360,33 +361,67 @@ func runnerFromNanopiStub(t *testing.T, bin string) *Runner {
 	return New(&ag, t.TempDir(), "acceptEdits", 5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// TestRunNanopiResumeFallback pins the soft-fallback when the perch-
-// minted UUID stored in the registry no longer maps to a real nanopi
-// session file. Without the fallback, every email after the drift fails
-// with "first line must be a session header" and the user gets a "task
-// failed" email instead of a reply.
-func TestRunNanopiResumeFallback(t *testing.T) {
-	// First invocation (resume) writes the lost-session error to stderr
-	// and exits non-zero. Second invocation (fresh, no --session) writes
-	// a reply and exits 0. The stub writes which invocation it was to
-	// argfile so the test can assert the fallback actually happened.
-	bin, argfile := writeStub(t, `if [ "$1" = "--session" ]; then
-  echo "error: resolve session: first line must be a session header" >&2
-  exit 1
-fi
-echo "REPLY-AFTER-FALLBACK"`)
+// TestRunNanopiResumeReportsSessionLost pins the contract for a resume whose
+// stored session id no longer maps to a real nanopi session: Run reports
+// ErrSessionLost and does NOT silently retry.
+//
+// Run used to retry here itself, reusing the same prompt. That became unsafe
+// once prompts started omitting the format contracts on resume
+// (config.PromptContracts): the retry would open a COLD session with a prompt
+// built for a warm one, so the agent never saw the ATTACHMENT PROTOCOL and
+// file replies vanished. Rebuilding the prompt is app.ProcessUnseen's job —
+// see TestProcessRetriesColdWithFullContracts.
+//
+// The stub greps the whole argv for --session. The previous version tested
+// only "$1", which is always "-p" for nanopi, so the lost-session branch never
+// executed and the test passed even with the fallback deleted.
+func TestRunNanopiResumeReportsSessionLost(t *testing.T) {
+	bin, argfile := writeStub(t, `for a in "$@"; do
+  if [ "$a" = "--session" ]; then
+    echo "error: resolve session: first line must be a session header" >&2
+    exit 1
+  fi
+done
+echo "REPLY-FROM-COLD-SESSION"`)
 
 	r := runnerFromNanopiStub(t, bin)
 	out, _, err := r.Run(context.Background(), "hi", "lost-uuid", false)
-	if err != nil {
-		t.Fatalf("Run should fall back, got error: %v", err)
+	if !errors.Is(err, ErrSessionLost) {
+		t.Fatalf("err = %v, want ErrSessionLost so the caller can rebuild the prompt", err)
 	}
-	if out != "REPLY-AFTER-FALLBACK" {
-		t.Errorf("out = %q, want REPLY-AFTER-FALLBACK", out)
+	if out != "" {
+		t.Errorf("out = %q, want empty — Run must not return a reply it did not get", out)
+	}
+	// The underlying agent error is preserved for the log.
+	if !strings.Contains(err.Error(), "first line must be a session header") {
+		t.Errorf("wrapped error lost the agent's message: %v", err)
 	}
 	args, _ := os.ReadFile(argfile)
 	if !strings.Contains(string(args), "lost-uuid") {
-		t.Errorf("first invocation should have carried lost-uuid, got: %s", args)
+		t.Errorf("the attempted resume should have carried lost-uuid, got: %s", args)
+	}
+}
+
+// TestRunNanopiFreshSessionSucceedsAfterLoss is the other half: once the
+// caller retries cold (no session id, isNew=true), the same stub serves the
+// request normally. Together with the test above this covers what the old
+// single test only claimed to cover.
+func TestRunNanopiFreshSessionSucceedsAfterLoss(t *testing.T) {
+	bin, _ := writeStub(t, `for a in "$@"; do
+  if [ "$a" = "--session" ]; then
+    echo "error: resolve session: first line must be a session header" >&2
+    exit 1
+  fi
+done
+echo "REPLY-FROM-COLD-SESSION"`)
+
+	r := runnerFromNanopiStub(t, bin)
+	out, _, err := r.Run(context.Background(), "hi", "", true)
+	if err != nil {
+		t.Fatalf("cold retry should succeed, got: %v", err)
+	}
+	if out != "REPLY-FROM-COLD-SESSION" {
+		t.Errorf("out = %q, want REPLY-FROM-COLD-SESSION", out)
 	}
 }
 
@@ -451,7 +486,7 @@ func TestRunClaudeResumeDoesNotFallback(t *testing.T) {
 // different mailbox.
 func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// Default case: agent owns agent_tommy@163.com.
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "The 5th attempt", "body", nil, "", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	low := strings.ToLower(p)
 	if !strings.Contains(low, "hi chris") {
 		t.Errorf("prompt should instruct greeting using fromName=Chris, got:\n%s", p)
@@ -463,7 +498,7 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 	// sign-off must use "phillip" and must NOT contain "tommy". This is
 	// the regression the user reported: agent on phillip's mailbox was
 	// signing off as "Tommy" because the prompt hardcoded the name.
-	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com", "", false)
+	p2 := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_phillip@163.com", "", PromptOpts{Contracts: true})
 	if !strings.Contains(p2, "Best,\\nphillip") {
 		t.Errorf("prompt should sign off with derived name 'phillip' for agent_phillip@163.com, got:\n%s", p2)
 	}
@@ -500,7 +535,7 @@ func TestBuildPromptGreetingFallback(t *testing.T) {
 // verdict — only the verdict (well, only the greeting-onwards) should
 // reach the human.
 func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "audit", "body", nil, "", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	must := []string{
 		"GREETING PROTOCOL",
 		"Hi <name>,",
@@ -533,11 +568,11 @@ func TestBuildPromptEnforcesGreetingProtocol(t *testing.T) {
 // failure mode. A regression here means a future edit dropped the contract
 // and the failure will drift back.
 func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
-	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("chris.zhang@wiz.ai", "Chris", "send report", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	must := []string{
 		"ATTACHMENT PROTOCOL",
-		"/home/agent/reply", // dir path appears in the numbered steps
-		"Perch scans",       // perch does the attaching, not the agent
+		"/home/agent/reply",                // dir path appears in the numbered steps
+		"Perch scans",                      // perch does the attaching, not the agent
 		"I'll read the file and attach it", // the exact failure phrase is named as forbidden
 		"Complete steps 1 and 2 in THIS turn",
 	}
@@ -553,7 +588,7 @@ func TestBuildPromptEnforcesAttachmentProtocol(t *testing.T) {
 // when the caller passed replyDir="" (unusual, but possible in tests) would
 // point the agent at a non-existent path.
 func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com", "", false)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	if strings.Contains(p, "ATTACHMENT PROTOCOL") {
 		t.Errorf("prompt must NOT include ATTACHMENT PROTOCOL when replyDir is empty, got:\n%s", p)
 	}
@@ -573,16 +608,16 @@ func TestBuildPromptNoAttachmentSectionWhenReplyDirEmpty(t *testing.T) {
 // to compare against; (c) the "delete outside cwd" failure mode is spelled
 // out as a concrete example the model must not replicate.
 func TestBuildPromptSafetyProtocolWhenTaskOnly(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/home/chris/perch", true)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/home/chris/perch", PromptOpts{TaskOnly: true, Contracts: true})
 	for _, want := range []string{
 		"SAFETY PROTOCOL",
 		"Always allowed",
 		"You MUST refuse",
 		"Judgment rule",
 		"REFUSE that part only",
-		"/home/chris/perch",     // cwd absolute path is injected
-		"~/foo.rpm",             // concrete failure-mode example
-		"Concrete example",      // header for the example block
+		"/home/chris/perch", // cwd absolute path is injected
+		"~/foo.rpm",         // concrete failure-mode example
+		"Concrete example",  // header for the example block
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing SAFETY PROTOCOL phrase %q, got:\n%s", want, p)
@@ -604,7 +639,7 @@ func TestBuildPromptSafetyProtocolWhenTaskOnly(t *testing.T) {
 // gated: an operator who set task_only: false in yaml must not see the
 // SAFETY PROTOCOL block injected.
 func TestBuildPromptNoSafetyProtocolWhenTaskOnlyOff(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/tmp/wd", false)
+	p := BuildPrompt("x@y", "X", "subj", "body", nil, "/home/agent/reply", "agent_tommy@163.com", "/tmp/wd", PromptOpts{Contracts: true})
 	if strings.Contains(p, "SAFETY PROTOCOL") {
 		t.Errorf("prompt must NOT include SAFETY PROTOCOL when taskOnly=false, got:\n%s", p)
 	}

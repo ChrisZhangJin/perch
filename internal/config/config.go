@@ -58,6 +58,37 @@ type Config struct {
 	// prompt-injection-style side asks; a truly hostile prompt still needs
 	// the agent's own permission mode to block it.
 	AgentTaskOnly bool
+	// PromptContracts controls when BuildPrompt emits the format-contract
+	// sections (greeting framing, GREETING PROTOCOL, ATTACHMENT PROTOCOL).
+	// "always" repeats them on every email; "on_resume" (the default) sends
+	// them only when opening a new agent session, because a resumed session
+	// already replayed them from turn 1 — re-sending costs ~1.8 KB per email
+	// and that cost compounds, since every turn is persisted into the
+	// session history and re-read on each later resume.
+	//
+	// The SAFETY PROTOCOL section is deliberately NOT covered by this knob:
+	// it is a guardrail whose effectiveness depends on sitting immediately
+	// before the task body, and there is no supported way to turn it off.
+	// See ContractsFor.
+	PromptContracts string // "always" | "on_resume"
+}
+
+// Prompt contract modes. See Config.PromptContracts.
+const (
+	ContractsAlways   = "always"
+	ContractsOnResume = "on_resume"
+)
+
+// ContractsFor reports whether this run's prompt should carry the format
+// contracts. isNew is true when perch is opening a fresh agent session.
+//
+// Callers MUST pass isNew=true for any run that starts a new session even
+// if the registry said otherwise — notably the session-lost retry in
+// app.ProcessUnseen, where a resume failed and perch restarts cold. A
+// contract-less prompt in a cold session means the agent never learns about
+// the reply directory, so "send me the file" fails silently.
+func (c *Config) ContractsFor(isNew bool) bool {
+	return c.PromptContracts != ContractsOnResume || isNew
 }
 
 // yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
@@ -65,8 +96,8 @@ type Config struct {
 // are intentionally NOT here — applyYAML detects them via a raw yaml.Node
 // pass and emits a WARN (see Task 7). AuthCode is never read from disk.
 type yamlConfig struct {
-	Email         string `yaml:"email"`
-	EmailProvider struct {
+	Email              string        `yaml:"email"`
+	EmailProvider      struct {
 		Name string `yaml:"name"`
 	} `yaml:"email_provider"`
 	AIAgent struct {
@@ -78,6 +109,9 @@ type yamlConfig struct {
 		// non-pointer would swallow the user's `task_only: false`.
 		TaskOnly *bool `yaml:"task_only"`
 	} `yaml:"ai_agent"`
+	Prompt struct {
+		Contracts string `yaml:"contracts"`
+	} `yaml:"prompt"`
 	AllowFrom          []string      `yaml:"allow_from"`
 	PollInterval       time.Duration `yaml:"poll_interval"`
 	TaskTimeout        time.Duration `yaml:"task_timeout"`
@@ -174,6 +208,7 @@ func Defaults() *Config {
 		SessionStore:       filepath.Join(os.TempDir(), "perch-sessions.json"),
 		LogLevel:           "info",
 		AgentTaskOnly:      true,
+		PromptContracts:    ContractsOnResume,
 	}
 }
 
@@ -244,6 +279,21 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.AIAgent.TaskOnly != nil {
 		c.AgentTaskOnly = *y.AIAgent.TaskOnly
+	}
+	if v := y.Prompt.Contracts; v != "" {
+		switch v {
+		case ContractsAlways, ContractsOnResume:
+			c.PromptContracts = v
+		default:
+			// Warn rather than fail: an unusable value here should not stop
+			// perch from serving mail. Falling back to on_resume is the
+			// cheaper of the two modes and never omits a contract from a
+			// cold session, so a typo cannot silently degrade behaviour.
+			slog.Warn("unknown prompt.contracts value; using default",
+				"value", v, "want", ContractsAlways+"|"+ContractsOnResume,
+				"using", ContractsOnResume)
+			c.PromptContracts = ContractsOnResume
+		}
 	}
 	if len(y.AllowFrom) > 0 {
 		c.AllowFrom = normalizeList(y.AllowFrom)

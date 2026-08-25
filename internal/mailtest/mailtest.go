@@ -29,10 +29,22 @@ type Mailtest struct {
 }
 
 // New builds a Mailtest wired to a real *app.App backed by the fakes. cfg is
-// used as-is (callers typically pass &config.Config{MaxPromptBytes: 4096,
-// AgentWorkdir: t.TempDir()}). allowFrom is forwarded to gate.New; pass ["*"]
-// for allow-all or a literal/regex slice. run may be nil -> a ScriptedRunner
-// that always returns ("the answer", "", nil).
+// used as-is.
+//
+// Start cfg from config.Defaults() and override what the test needs:
+//
+//	cfg := config.Defaults()
+//	cfg.MaxPromptBytes = 4096
+//	cfg.AgentWorkdir = t.TempDir()
+//
+// A bare &config.Config{} is a trap. Several fields have non-zero defaults —
+// AgentTaskOnly (emits the SAFETY PROTOCOL) is true, PromptContracts is
+// "on_resume" — so a struct literal silently configures the opposite of
+// production and the harness stops reproducing what perch actually does.
+//
+// allowFrom is forwarded to gate.New; pass ["*"] for allow-all or a
+// literal/regex slice. run may be nil -> a ScriptedRunner that always returns
+// ("the answer", "", nil).
 func New(cfg *config.Config, allowFrom []string, run app.TaskRunner) (*Mailtest, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("mailtest: cfg must not be nil")

@@ -86,7 +86,7 @@ func (s *FakeSender) Reply(to, subject, inReplyTo string, refs []string, body st
 	s.replies = append(s.replies, Reply{
 		To: to, Subject: subject, InReplyTo: inReplyTo,
 		References: append([]string{}, refs...),
-		Body:       body, Attachments: append([]string{}, attachments...),
+		Body: body, Attachments: append([]string{}, attachments...),
 	})
 	return nil
 }
@@ -113,8 +113,14 @@ func (s *FakeSender) Replies() []Reply {
 // it is returned as the second value of Run (the agent-minted session id
 // perch adopts).
 type ScriptedRunner struct {
-	mu      sync.Mutex
-	Outs    []string
+	mu   sync.Mutex
+	Outs []string
+	// Errs is the canned error per Run call, positionally aligned with Outs:
+	// call N returns Errs[N] when it is set and non-nil. Unlike Outs, the last
+	// entry is NOT reused past the end — a short Errs means "no error from
+	// here on", which is what makes it usable for one-shot failures like
+	// runner.ErrSessionLost followed by a successful retry.
+	Errs    []error
 	Native  string
 	Prompts []string
 	SIDs    []string
@@ -127,7 +133,11 @@ func (r *ScriptedRunner) Run(ctx context.Context, prompt, sid string, isNew bool
 	r.Prompts = append(r.Prompts, prompt)
 	r.SIDs = append(r.SIDs, sid)
 	r.IsNews = append(r.IsNews, isNew)
-	idx := len(r.Prompts) - 1
+	call := len(r.Prompts) - 1
+	if call < len(r.Errs) && r.Errs[call] != nil {
+		return "", "", r.Errs[call]
+	}
+	idx := call
 	if idx >= len(r.Outs) {
 		idx = len(r.Outs) - 1
 	}

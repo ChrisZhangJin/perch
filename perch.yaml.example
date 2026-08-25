@@ -52,6 +52,25 @@ ai_agent:
                        # task. A light guardrail against email-body-borne
                        # side-requests; set false to disable.
 
+# --- Prompt ----------------------------------------------------------------
+# When to send the format-contract sections (the "reply like a human"
+# framing, GREETING PROTOCOL, ATTACHMENT PROTOCOL) — about 1.8 KB per email.
+#
+#   on_resume  DEFAULT. Send them only when opening a new agent session.
+#              A resumed session already replayed them from turn 1, and the
+#              cost compounds: every turn is persisted into the session
+#              history and re-read on each later resume. An 8-email thread
+#              carries ~47% less prompt text this way.
+#   always     Repeat them on every email. Use if you see replies drifting
+#              out of format on long threads.
+#
+# The SAFETY PROTOCOL section (ai_agent.task_only) is NOT affected by this
+# and is always sent — it is a guardrail, and its effectiveness depends on
+# sitting immediately before the task body.
+# No env override — YAML only.
+prompt:
+  contracts: on_resume   # on_resume | always
+
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone
 # (fail-closed, the safe default for env-only setups that never went

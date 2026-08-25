@@ -144,11 +144,14 @@ func main() {
 	}
 	log := slog.New(plog.New(os.Stderr, level))
 
-	perchCfg := &config.Config{
-		MaxPromptBytes: 4096,
-		AgentWorkdir:   y.Workdir,
-		TaskTimeout:    y.TaskTimeout,
-	}
+	// Start from Defaults so the harness reproduces production behaviour.
+	// A bare &config.Config{} would zero the fields whose default is not the
+	// zero value — AgentTaskOnly (SAFETY PROTOCOL) and PromptContracts — and
+	// this CLI exists precisely to observe what the real agent does.
+	perchCfg := config.Defaults()
+	perchCfg.MaxPromptBytes = 4096
+	perchCfg.AgentWorkdir = y.Workdir
+	perchCfg.TaskTimeout = y.TaskTimeout
 	run := runner.New(&ag, y.Workdir, y.PermissionMode, y.TaskTimeout, log)
 
 	mt, err := mailtest.New(perchCfg, y.AllowFrom, run)
