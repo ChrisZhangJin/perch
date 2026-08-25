@@ -210,10 +210,19 @@ func splitAndTrim(s string) []string {
 //
 // The file is fully populated: fields the wizard prompted for carry the
 // operator's answer; fields the wizard did not prompt for (loop timing,
-// byte caps, session store, TLS) are written with their built-in default
-// and an inline comment so the operator can see every knob that exists.
+// byte caps, session store, TLS, task_only, long_task_ack) are written with
+// their built-in default and an inline comment so the operator can see every
+// knob that exists. TestPersistWritesEveryYAMLKey enforces that "every knob"
+// claim against config.YAMLKeys().
 // Format is hand-written (not yaml.Marshal) so comments can sit next to
 // the values they describe.
+//
+// INVARIANT: cfg must originate from config.Load (i.e. be seeded by
+// config.Defaults), not a bare &config.Config{}. The defaults block below
+// can only restore zero-valued fields whose default is also the zero value;
+// AgentTaskOnly defaults to TRUE, so a bare struct would persist
+// `task_only: false` and silently disable the guardrail on the next start.
+// main.go satisfies this — it calls config.Load before setup.Ensure.
 func persist(cfg *config.Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -268,7 +277,14 @@ func persist(cfg *config.Config) error {
 		"ai_agent:\n" +
 		"  name: " + cfg.AgentName + "\n" +
 		"  workdir: " + cfg.AgentWorkdir + "\n" +
-		"  permission_mode: " + cfg.AgentPermMode + "   # claude only; nanopi/pi ignore\n\n" +
+		"  permission_mode: " + cfg.AgentPermMode + "   # claude only; nanopi/pi ignore\n" +
+		"  # task_only (DEFAULT true): inject a SAFETY PROTOCOL section into the\n" +
+		"  # agent prompt. Read-only inspection and anything inside workdir stay\n" +
+		"  # allowed; destructive actions outside workdir (rm, sudo, curl to\n" +
+		"  # external hosts, package install) are refused UNLESS destruction IS\n" +
+		"  # the stated task. A light guardrail against side-requests smuggled\n" +
+		"  # into an email body. Set false to disable.\n" +
+		"  task_only: " + strconv.FormatBool(cfg.AgentTaskOnly) + "\n\n" +
 		"# --- Whitelist ---\n" +
 		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
 		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +
@@ -282,13 +298,19 @@ func persist(cfg *config.Config) error {
 		"# --- Loop timing ---\n" +
 		"poll_interval: " + cfg.PollInterval.String() + "   # POLL_INTERVAL (poll tick / IDLE keepalive)\n" +
 		"task_timeout: " + cfg.TaskTimeout.String() + "   # TASK_TIMEOUT (SIGTERM → 5s → SIGKILL)\n\n" +
+		"# --- Long-task interim ack ---\n" +
+		"# When true, perch runs a lightweight classifier before the real task.\n" +
+		"# If the classifier says \"long\", perch sends an interim ack email so\n" +
+		"# you know the request landed while the real reply is still cooking.\n" +
+		"# Off by default — enabling it costs one extra agent run per inbound.\n" +
+		"long_task_ack: " + strconv.FormatBool(cfg.LongTaskAck) + "   # LONG_TASK_ACK\n\n" +
 		"# --- Logging ---\n" +
 		"log_level: " + cfg.LogLevel + "   # LOG_LEVEL (debug / info / warn / error)\n\n" +
 		"# --- Email handling ---\n" +
 		"max_prompt_bytes: " + strconv.FormatInt(int64(cfg.MaxPromptBytes), 10) +
 		"   # MAX_PROMPT_BYTES (truncate huge bodies before the agent sees them)\n" +
 		"max_attachment_bytes: " + strconv.FormatInt(int64(cfg.MaxAttachmentBytes), 10) +
-		"   # MAX_ATTACH_BYTES (per-attachment size cap; oversized ones are dropped)\n\n" +
+		"   # MAX_ATTACHMENT_BYTES (per-attachment size cap; oversized ones are dropped)\n\n" +
 		"# --- Persistence ---\n" +
 		"# thread-root → agent session map (JSON). Survives restarts.\n" +
 		"# (default = $TMPDIR/perch-sessions.json)\n" +

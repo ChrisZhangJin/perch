@@ -10,6 +10,12 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 )
 
+// Compile-time interface assertions: if any interface method signature changes,
+// the build fails here instead of at runtime.
+var _ app.Mailbox    = (*FakeMailbox)(nil)
+var _ app.ReplySender = (*FakeSender)(nil)
+var _ app.TaskRunner  = (*ScriptedRunner)(nil)
+
 func sliceEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

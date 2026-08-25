@@ -28,3 +28,9 @@ grant.code
 
 # local planning notes
 /.planning/
+
+# local runtime state (perch/mailtest)
+perch.log
+*.log
+mailtest-sessions.json
+perch-sessions.json

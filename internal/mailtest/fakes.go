@@ -30,7 +30,7 @@ type FakeMailbox struct {
 // "unassigned" by SendRaw's validation). Otherwise the caller-chosen uid is
 // used and nextUID is advanced past it so subsequent auto-assignments don't
 // collide.
-func (f *FakeMailbox) Enqueue(uid uint32, data []byte) {
+func (f *FakeMailbox) Enqueue(uid uint32, data []byte) uint32 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if uid == 0 {
@@ -43,6 +43,7 @@ func (f *FakeMailbox) Enqueue(uid uint32, data []byte) {
 		f.nextUID = uid + 1
 	}
 	f.msgs = append(f.msgs, mailbox.Raw{UID: uid, Data: data})
+	return uid
 }
 
 func (f *FakeMailbox) FetchUnseen(ctx context.Context) ([]mailbox.Raw, error) {
@@ -85,7 +86,7 @@ func (s *FakeSender) Reply(to, subject, inReplyTo string, refs []string, body st
 	s.replies = append(s.replies, Reply{
 		To: to, Subject: subject, InReplyTo: inReplyTo,
 		References: append([]string{}, refs...),
-		Body: body, Attachments: append([]string{}, attachments...),
+		Body:       body, Attachments: append([]string{}, attachments...),
 	})
 	return nil
 }

@@ -1,0 +1,21 @@
+# mailtest.yaml — test config for cmd/mailtest
+# Run:   ./mailtest -config mailtest.yaml
+# Stdin: echo "your task" | ./mailtest -config mailtest.yaml -body-stdin
+# Agent: ./mailtest -config mailtest.yaml -agent nanopi   (overrides `agent:` below)
+
+from: chris@example.com
+to: agent@perch.local
+subject: "quick question"
+body: |
+  What is the current date? Reply in one sentence.
+
+# which agent binary to drive; must be on PATH
+agent: claude          # claude | nanopi | pi
+
+# optional — override any of these:
+# body_file: /path/to/task.txt
+# workdir: .
+# permission_mode: acceptEdits
+# allow_from: ["*"]
+# task_timeout: 120s
+# log_level: info      # debug | info | warn | error

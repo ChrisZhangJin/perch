@@ -15,15 +15,11 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ChrisZhangJin/perch/internal/agent"
-	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/daemon"
 	"github.com/ChrisZhangJin/perch/internal/gate"
 	plog "github.com/ChrisZhangJin/perch/internal/log"
-	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/provider"
-	"github.com/ChrisZhangJin/perch/internal/replier"
-	"github.com/ChrisZhangJin/perch/internal/runner"
 	"github.com/ChrisZhangJin/perch/internal/session"
 	"github.com/ChrisZhangJin/perch/internal/setup"
 )
@@ -249,31 +245,25 @@ func main() {
 		log.Error("gate build", "err", err)
 		exitInChild(1)
 	}
-	strat, err := mailbox.BuildStrategy(cfg, p)
-	if err != nil {
-		log.Error("mailbox dial", "err", err)
-		exitInChild(1)
-	}
-	mode := "poll-only"
-	if p.Caps.SupportsIDLE {
-		mode = "idle+poll"
-	}
-	note := ""
-	if mode == "poll-only" {
-		note = "server has no IMAP IDLE; using POLL_INTERVAL"
-	}
-	log.Info("mailbox ready", "mode", mode, "note", note)
 	sess, err := session.Load(cfg.SessionStore)
 	if err != nil {
 		log.Error("session load", "err", err)
 		exitInChild(1)
 	}
-	a := app.New(cfg, strat.Box, g, sess,
-		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log),
-		replier.New(cfg, p.SMTPAddr),
-		log,
-		strat.Triggers...,
-	)
+
+	// In testmode, the IMAP/SMTP dial steps are skipped -- the HTTP endpoint
+	// bypasses both. Production builds keep the original path so testmode
+	// behavior never leaks into a release binary.
+	a, err := buildApp(cfg, p, ag, g, sess, log)
+	if err != nil {
+		log.Error("app build", "err", err)
+		exitInChild(1)
+	}
+
+	if err := InitTestMode(a, cfg, log); err != nil {
+		log.Error("testmode init", "err", err)
+		exitInChild(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

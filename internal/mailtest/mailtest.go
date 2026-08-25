@@ -82,14 +82,7 @@ func (m *Mailtest) Send(from, to, subject, body string) (uint32, error) {
 	msgID := fmt.Sprintf("<mtest-%d@mailtest>", m.seq)
 	eml := composeRFC822(from, to, subject, msgID, body)
 
-	// Pre-compute the UID that Enqueue(0, ...) will auto-assign: when
-	// nextUID is 0 Enqueue seeds it to 1 first, otherwise it uses nextUID
-	// as-is. Either way the assigned UID is max(nextUID, 1).
-	uid := m.mb.nextUID
-	if uid == 0 {
-		uid = 1
-	}
-	m.mb.Enqueue(0, eml)
+	uid := m.mb.Enqueue(0, eml)
 	return uid, nil
 }
 

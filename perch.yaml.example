@@ -7,11 +7,16 @@
 #     env vars  >  this YAML file  >  built-in defaults
 #
 # Secrets (AGENT_AUTH_CODE) MUST be set via env, never committed here.
-# See README.md / docs/DESIGN.md for the full design.
+# See README.md for the full design.
 #
 # First-run wizard: if any required field is missing AND stdin is a TTY,
 # perch prompts for the missing fields interactively and writes the
-# non-secret values to ~/.perch/perch.yaml (0600).
+# non-secret values to ~/.perch/perch.yaml (0600). That generated file
+# carries every key below with its default — this example exists to explain
+# them, not to be more complete.
+#
+# Every key perch understands appears in this file. Keys shown commented out
+# are optional and display their built-in default; uncomment to override.
 
 # --- Email provider --------------------------------------------------------
 # Built-in names. Each one bakes in the right IMAP/SMTP endpoints and the
@@ -38,13 +43,14 @@ ai_agent:
                        #   acceptEdits        — auto-allow file edits
                        #   bypassPermissions  — auto-allow ALL tools
                        #   plan               — read-only planning mode
-  # task_only: true    # DEFAULT true. Injects a SAFETY PROTOCOL section into
-                       # the agent prompt: read-only inspection and any op
-                       # inside cwd are always allowed; destructive actions
-                       # outside cwd (rm, sudo, curl to external hosts,
-                       # package install, etc.) are refused UNLESS destruction
-                       # IS the stated task. A light guardrail against
-                       # email-body-borne side-requests; set false to disable.
+  # task_only: true    # DEFAULT true. No env override — YAML only.
+                       # Injects a SAFETY PROTOCOL section into the agent
+                       # prompt: read-only inspection and any op inside cwd
+                       # are always allowed; destructive actions outside cwd
+                       # (rm, sudo, curl to external hosts, package install,
+                       # etc.) are refused UNLESS destruction IS the stated
+                       # task. A light guardrail against email-body-borne
+                       # side-requests; set false to disable.
 
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone
@@ -75,6 +81,16 @@ allow_from:
   # - s".+@(foo|bar)\.example\.com"
   # - "*"                          # uncomment to accept everyone
 
+# --- Account ---------------------------------------------------------------
+# The mailbox perch watches and replies from. The AGENT_EMAIL env var
+# overrides this; the setup wizard writes the value here so unattended
+# restarts don't have to re-enter it.
+#
+# The matching auth code is NEVER read from this file — set AGENT_AUTH_CODE
+# in the environment. (For 163/126/qq this is the mailbox "authorization
+# code", not your login password.)
+email: agent@163.com                    # AGENT_EMAIL
+
 # --- Loop timing -----------------------------------------------------------
 poll_interval: 60s                       # POLL_INTERVAL (poll tick / IDLE keepalive)
                                          #   lower this if your server is poll-only
@@ -89,6 +105,11 @@ task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKI
 # Env override: LONG_TASK_ACK=true
 # long_task_ack: false
 
+# --- Logging ---------------------------------------------------------------
+# debug surfaces the full prompt/response flow (including message bodies);
+# keep it at info or above on a real mailbox.
+log_level: info                         # LOG_LEVEL (debug | info | warn | error)
+
 # --- Email handling --------------------------------------------------------
 max_prompt_bytes: 65536                 # MAX_PROMPT_BYTES (truncate huge bodies before
                                          #   the agent sees them — protects against
@@ -100,6 +121,7 @@ max_attachment_bytes: 52428800          # MAX_ATTACHMENT_BYTES (per-attachment s
 # --- Persistence -----------------------------------------------------------
 # Thread-root → agent session UUID map (JSON). Survives restarts so a reply
 # in the same thread resumes the same agent session.
+# Env override: SESSION_STORE
 # session_store: /var/lib/perch/sessions.json
 # session_store: ./perch-sessions.json
 # (default: $TMPDIR/perch-sessions.json)
@@ -107,4 +129,5 @@ max_attachment_bytes: 52428800          # MAX_ATTACHMENT_BYTES (per-attachment s
 # --- TLS -------------------------------------------------------------------
 # DEV/TEST ONLY — accepts self-signed certs (e.g. a local GreenMail).
 # NEVER enable against a real mailbox.
+# Env override: TLS_INSECURE_SKIP_VERIFY
 # tls_insecure_skip_verify: false

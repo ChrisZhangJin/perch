@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -64,8 +65,8 @@ type Config struct {
 // are intentionally NOT here — applyYAML detects them via a raw yaml.Node
 // pass and emits a WARN (see Task 7). AuthCode is never read from disk.
 type yamlConfig struct {
-	Email              string        `yaml:"email"`
-	EmailProvider      struct {
+	Email         string `yaml:"email"`
+	EmailProvider struct {
 		Name string `yaml:"name"`
 	} `yaml:"email_provider"`
 	AIAgent struct {
@@ -86,6 +87,43 @@ type yamlConfig struct {
 	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
 	LogLevel           string        `yaml:"log_level"`
 	LongTaskAck        bool          `yaml:"long_task_ack"`
+}
+
+// YAMLKeys returns every YAML key Load understands, nested keys in dotted
+// form (e.g. "ai_agent.task_only"). Derived from yamlConfig's struct tags by
+// reflection, so it cannot drift from what Load actually reads.
+//
+// This exists as a seam for the setup wizard's completeness test. The wizard
+// promises to write a fully populated perch.yaml — every knob visible, even
+// ones it never prompts for — and that promise is only checkable against the
+// real key set. Adding a field to yamlConfig without teaching setup.persist
+// to write it will fail that test.
+func YAMLKeys() []string {
+	return yamlKeysOf(reflect.TypeOf(yamlConfig{}), "")
+}
+
+// yamlKeysOf walks a struct's yaml tags, recursing into nested structs and
+// prefixing their keys. time.Duration is an int64, not a struct, so it falls
+// through to the leaf case like any other scalar.
+func yamlKeysOf(t reflect.Type, prefix string) []string {
+	var out []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		ft := f.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct {
+			out = append(out, yamlKeysOf(ft, prefix+name+".")...)
+			continue
+		}
+		out = append(out, prefix+name)
+	}
+	return out
 }
 
 // Load reads the YAML file at cfgPath (or the default search path), layers

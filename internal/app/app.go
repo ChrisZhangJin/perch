@@ -74,6 +74,41 @@ func (a *App) SessForTest() *session.Registry { return a.sess }
 // after construction.
 func (a *App) Cfg() *config.Config { return a.cfg }
 
+// SetMailboxForTest swaps the inbound mailbox. Test-only; production code
+// never calls this because the mailbox is set at New time. Used by the
+// --testmode HTTP server (cmd/perch) to inject messages into the same App
+// without going through IMAP.
+func (a *App) SetMailboxForTest(mb Mailbox) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.mb = mb
+}
+
+// SetReplySenderForTest swaps the outbound reply sender. Test-only; used
+// by --testmode to capture replies before they hit SMTP.
+func (a *App) SetReplySenderForTest(rep ReplySender) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rep = rep
+}
+
+// ReplySenderForTest returns the current outbound reply sender. Test-only;
+// used by --testmode to wrap the real sender with InjectSender so replies
+// are captured in flight while still hitting SMTP.
+func (a *App) ReplySenderForTest() ReplySender {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.rep
+}
+
+// MailboxForTest returns the current inbound mailbox. Test-only; used by
+// --testmode to recover the QueuedMailbox wired by buildApp.
+func (a *App) MailboxForTest() Mailbox {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.mb
+}
+
 // ProcessUnseen fetches and handles every currently-unseen message:
 // parse -> dedup -> whitelist -> session -> run claude -> reply -> mark seen.
 // Inbound attachments are saved under <workdir>/attachments/<msg-id>/ and the

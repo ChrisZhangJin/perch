@@ -169,6 +169,102 @@ func TestEnsureInteractiveHappyPath(t *testing.T) {
 	}
 }
 
+// TestPersistWritesEveryYAMLKey enforces persist's documented promise: the
+// generated perch.yaml shows every knob that exists, so an operator never has
+// to learn a key name from the source. It reflects over the real yamlConfig
+// key set, so adding a field to config without teaching persist to write it
+// fails here instead of shipping an invisible setting.
+//
+// Regression: task_only and long_task_ack were both added to config and to
+// perch.yaml.example but never to persist, so wizard-generated configs
+// omitted them entirely.
+func TestPersistWritesEveryYAMLKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Seed from Defaults, matching the production path (config.Load then
+	// setup.Ensure) that persist's INVARIANT comment requires.
+	cfg := config.Defaults()
+	cfg.Email = "agent@163.com"
+	cfg.ProviderName = "163"
+	cfg.AgentName = "claude"
+	cfg.AgentWorkdir = "."
+	cfg.AgentPermMode = "acceptEdits"
+	cfg.AllowFrom = []string{"alice@163.com"}
+
+	if err := persist(cfg); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tmpHome, ".perch", "perch.yaml"))
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+
+	for _, key := range config.YAMLKeys() {
+		// Nested keys are written indented under their parent, so match on
+		// the leaf; the parent block key is checked by its own entry.
+		leaf := key
+		if i := strings.LastIndex(key, "."); i >= 0 {
+			leaf = key[i+1:]
+		}
+		if !strings.Contains(string(body), leaf+":") {
+			t.Errorf("persisted config is missing key %q — add it to persist() in wizard.go\nfile:\n%s", key, body)
+		}
+	}
+}
+
+// TestPersistedConfigRoundTrips closes the loop the key-presence check
+// cannot: the file persist writes must parse back through config.Load with
+// the same values. A key can be present but misspelled, wrongly indented, or
+// carry a value the strict parser rejects.
+func TestPersistedConfigRoundTrips(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cfg := config.Defaults()
+	cfg.Email = "agent@163.com"
+	cfg.ProviderName = "qq"
+	cfg.AgentName = "claude"
+	cfg.AgentWorkdir = "/tmp/wd"
+	cfg.AgentPermMode = "plan"
+	cfg.AllowFrom = []string{"alice@163.com"}
+	cfg.LongTaskAck = true
+	cfg.AgentTaskOnly = false // explicitly disabled must survive the round trip
+
+	if err := persist(cfg); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	path := filepath.Join(tmpHome, ".perch", "perch.yaml")
+
+	// config.Load layers env on top of YAML; clear the ones that would win
+	// so this test reads the file, not the ambient environment.
+	for _, k := range []string{"AGENT_EMAIL", "ALLOW_FROM", "POLL_INTERVAL",
+		"TASK_TIMEOUT", "MAX_PROMPT_BYTES", "MAX_ATTACHMENT_BYTES",
+		"SESSION_STORE", "TLS_INSECURE_SKIP_VERIFY", "LOG_LEVEL", "LONG_TASK_ACK"} {
+		t.Setenv(k, "")
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load on wizard-written file: %v", err)
+	}
+	if got.AgentTaskOnly != false {
+		t.Errorf("AgentTaskOnly = %v, want false — an explicit opt-out must survive persist→Load", got.AgentTaskOnly)
+	}
+	if got.LongTaskAck != true {
+		t.Errorf("LongTaskAck = %v, want true", got.LongTaskAck)
+	}
+	if got.AgentPermMode != "plan" {
+		t.Errorf("AgentPermMode = %q, want plan", got.AgentPermMode)
+	}
+	if got.ProviderName != "qq" {
+		t.Errorf("ProviderName = %q, want qq", got.ProviderName)
+	}
+	if len(got.AllowFrom) != 1 || got.AllowFrom[0] != "alice@163.com" {
+		t.Errorf("AllowFrom = %#v", got.AllowFrom)
+	}
+}
+
 func TestEnsureInteractiveAuthcodeNotEchoed(t *testing.T) {
 	interactiveStdin(t)
 	cfg := &config.Config{} // everything missing => wizard runs
