@@ -113,20 +113,64 @@ func (i *InjectSender) Clear() {
 }
 
 // injectRequest is the JSON body for POST /inject.
+//
+// MessageID and References exist to build multi-turn threads. Without them
+// every injection mints a fresh id and carries no References, so each one is
+// a brand-new thread and the agent session is always opened cold — there is
+// no way to exercise a resume, which is most of perch's threading behaviour.
+//
+// Turn 1 opens a thread; later turns reference its id:
+//
+//	{"from":"a@b","body":"...","message_id":"<t1@x>"}
+//	{"from":"a@b","body":"...","message_id":"<t2@x>","references":["<t1@x>"]}
+//
+// Angle brackets are optional on input; they are added if missing.
 type injectRequest struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
+	// MessageID overrides the synthetic <testmode-N@testmode> id.
+	MessageID string `json:"message_id"`
+	// References is the thread chain. Entry 0 is the thread root, which is
+	// what message.ThreadRoot keys the session registry on.
+	References []string `json:"references"`
+}
+
+// normalizeMsgID trims s and wraps it in angle brackets when the caller left
+// them off. message.allMsgIDs only recognises <...>-wrapped ids, so a bare
+// "t1@x" in References parses to nothing, ThreadRoot silently falls back to
+// the message's own id, and the injection opens a NEW thread instead of
+// resuming the one the caller named — a wrong result that looks like a
+// working request. Returns "" for empty input.
+func normalizeMsgID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !strings.HasPrefix(s, "<") {
+		s = "<" + s
+	}
+	if !strings.HasSuffix(s, ">") {
+		s += ">"
+	}
+	return s
 }
 
 // injectResponse is the JSON response from POST /inject. Replies carries
 // every reply the run produced, in send order; Reply points at the last one
 // (the real answer, when a long-task ack preceded it).
 type injectResponse struct {
-	UID     uint32          `json:"uid"`
-	Reply   *replyResponse  `json:"reply,omitempty"`
-	Replies []replyResponse `json:"replies,omitempty"`
+	UID uint32 `json:"uid"`
+	// MessageID is the id this injection was sent under (echoed back so a
+	// script can chain it into the next turn's references).
+	MessageID string `json:"message_id"`
+	// ThreadRoot is the key the session registry uses for this message:
+	// references[0] when present, else message_id. Two injections sharing a
+	// thread root share an agent session.
+	ThreadRoot string          `json:"thread_root"`
+	Reply      *replyResponse  `json:"reply,omitempty"`
+	Replies    []replyResponse `json:"replies,omitempty"`
 }
 
 type replyResponse struct {
@@ -154,9 +198,28 @@ func handleInject(qm *QueuedMailbox, is *InjectSender, a *app.App) http.HandlerF
 			req.Subject = "(no subject)"
 		}
 
-		seq++
-		msgID := fmt.Sprintf("<testmode-%d@testmode>", seq)
-		eml := composeRFC822(req.From, req.To, req.Subject, msgID, req.Body)
+		// An id with whitespace would split across fields in the header and
+		// be dropped by the parser, silently detaching the message from its
+		// thread. Reject instead.
+		for _, raw := range append([]string{req.MessageID}, req.References...) {
+			if strings.ContainsAny(raw, " \t\r\n") {
+				http.Error(w, `{"error":"message_id/references must not contain whitespace"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		msgID := normalizeMsgID(req.MessageID)
+		if msgID == "" {
+			seq++
+			msgID = fmt.Sprintf("<testmode-%d@testmode>", seq)
+		}
+		refs := make([]string, 0, len(req.References))
+		for _, r := range req.References {
+			if n := normalizeMsgID(r); n != "" {
+				refs = append(refs, n)
+			}
+		}
+
+		eml := composeRFC822(req.From, req.To, req.Subject, msgID, refs, req.Body)
 		uid := qm.Enqueue(0, eml)
 
 		is.Clear()
@@ -165,7 +228,11 @@ func handleInject(qm *QueuedMailbox, is *InjectSender, a *app.App) http.HandlerF
 			return
 		}
 
-		resp := injectResponse{UID: uid}
+		threadRoot := msgID
+		if len(refs) > 0 {
+			threadRoot = refs[0]
+		}
+		resp := injectResponse{UID: uid, MessageID: msgID, ThreadRoot: threadRoot}
 		for _, rp := range is.Replies() {
 			resp.Replies = append(resp.Replies, replyResponse{
 				To: rp.to, Subject: rp.subject, Body: rp.body, Refs: rp.refs,
@@ -183,12 +250,20 @@ func handleInject(qm *QueuedMailbox, is *InjectSender, a *app.App) http.HandlerF
 var seq uint64
 
 // composeRFC822 builds a minimal RFC822 message with CRLF line endings.
-func composeRFC822(from, to, subject, msgID, body string) []byte {
+// refs, when non-empty, becomes the References header (space-separated, the
+// form message.allMsgIDs parses) plus an In-Reply-To pointing at the last
+// entry, which is what a real client sends. perch threads on References
+// alone; In-Reply-To is there so the fixture looks like real mail.
+func composeRFC822(from, to, subject, msgID string, refs []string, body string) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&b, "Message-ID: %s\r\n", msgID)
+	if len(refs) > 0 {
+		fmt.Fprintf(&b, "References: %s\r\n", strings.Join(refs, " "))
+		fmt.Fprintf(&b, "In-Reply-To: %s\r\n", refs[len(refs)-1])
+	}
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")

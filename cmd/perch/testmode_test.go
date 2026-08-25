@@ -263,3 +263,124 @@ func (f *fakeRunner) Run(_ context.Context, _, _ string, _ bool) (string, string
 
 // ensure mailbox.Raw compiles in this file
 var _ = mailbox.Raw{}
+
+// --- threaded injection ----------------------------------------------------
+
+// inject posts one message and returns the decoded response.
+func inject(t *testing.T, qm *QueuedMailbox, is *InjectSender, a *app.App, body string) injectResponse {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/inject", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleInject(qm, is, a)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp injectResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp
+}
+
+func TestNormalizeMsgID(t *testing.T) {
+	for in, want := range map[string]string{
+		"<t1@x>":  "<t1@x>",
+		"t1@x":    "<t1@x>", // the whole point: bare ids must still thread
+		"<t1@x":   "<t1@x>",
+		"t1@x>":   "<t1@x>",
+		"  t1@x ": "<t1@x>",
+		"":        "",
+		"   ":     "",
+	} {
+		if got := normalizeMsgID(in); got != want {
+			t.Errorf("normalizeMsgID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestInjectDefaultsToNewThreadEachTime pins the pre-existing behaviour that
+// made resumes untestable, so it stays a documented default rather than a
+// surprise: with no message_id, every injection is its own thread.
+func TestInjectDefaultsToNewThreadEachTime(t *testing.T) {
+	a, qm, is := newTestApp(t, nil, nil)
+	r1 := inject(t, qm, is, a, `{"from":"chris@x","body":"one"}`)
+	r2 := inject(t, qm, is, a, `{"from":"chris@x","body":"two"}`)
+	if r1.ThreadRoot == r2.ThreadRoot {
+		t.Errorf("unthreaded injections should not share a thread root, both = %q", r1.ThreadRoot)
+	}
+}
+
+// TestInjectReferencesSharesThreadRoot is the feature: a follow-up naming the
+// first message in references lands in the same thread, so the agent session
+// is resumed rather than opened cold. Without this the /inject endpoint can
+// only ever exercise the isNew=true path.
+func TestInjectReferencesSharesThreadRoot(t *testing.T) {
+	run := &fakeRunner{out: "Hi Chris,\nanswer"}
+	a, qm, is := newTestApp(t, nil, run)
+
+	r1 := inject(t, qm, is, a, `{"from":"chris@x","body":"turn 1","message_id":"<t1@x>"}`)
+	if r1.MessageID != "<t1@x>" {
+		t.Errorf("MessageID = %q, want <t1@x>", r1.MessageID)
+	}
+	if r1.ThreadRoot != "<t1@x>" {
+		t.Errorf("turn 1 ThreadRoot = %q, want its own id", r1.ThreadRoot)
+	}
+
+	r2 := inject(t, qm, is, a, `{"from":"chris@x","body":"turn 2","message_id":"<t2@x>","references":["<t1@x>"]}`)
+	if r2.ThreadRoot != "<t1@x>" {
+		t.Errorf("turn 2 ThreadRoot = %q, want <t1@x> (the root, not its own id)", r2.ThreadRoot)
+	}
+
+	// Same thread root => same session id in the registry, which is what
+	// makes turn 2 a resume.
+	sid1, _, _ := a.SessForTest().Resolve("<t1@x>")
+	sid2, isNew, _ := a.SessForTest().Resolve(r2.ThreadRoot)
+	if sid1 != sid2 || isNew {
+		t.Errorf("turn 2 should resolve to the existing session (sid1=%q sid2=%q isNew=%v)", sid1, sid2, isNew)
+	}
+}
+
+// TestInjectBareIDsStillThread covers the forgiving input path end to end:
+// angle brackets omitted on both sides must still produce a shared thread.
+func TestInjectBareIDsStillThread(t *testing.T) {
+	a, qm, is := newTestApp(t, nil, nil)
+	inject(t, qm, is, a, `{"from":"chris@x","body":"one","message_id":"t1@x"}`)
+	r2 := inject(t, qm, is, a, `{"from":"chris@x","body":"two","message_id":"t2@x","references":["t1@x"]}`)
+	if r2.ThreadRoot != "<t1@x>" {
+		t.Errorf("ThreadRoot = %q, want <t1@x> — bare ids must be normalized, not dropped", r2.ThreadRoot)
+	}
+}
+
+// TestInjectRejectsWhitespaceInIDs: a space would split the header field and
+// the parser would drop the id, silently detaching the message from its
+// thread. Better to fail the request than to return a wrong-looking success.
+func TestInjectRejectsWhitespaceInIDs(t *testing.T) {
+	a, qm, is := newTestApp(t, nil, nil)
+	for _, body := range []string{
+		`{"from":"chris@x","body":"x","message_id":"<t 1@x>"}`,
+		`{"from":"chris@x","body":"x","references":["<t 1@x>"]}`,
+	} {
+		req := httptest.NewRequest("POST", "/inject", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handleInject(qm, is, a)(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status=%d, want 400 for %s", rec.Code, body)
+		}
+	}
+}
+
+// TestComposeRFC822EmitsThreadHeaders checks the wire format the parser sees.
+func TestComposeRFC822EmitsThreadHeaders(t *testing.T) {
+	eml := string(composeRFC822("a@x", "b@x", "s", "<t2@x>", []string{"<t1@x>", "<t15@x>"}, "body"))
+	if !strings.Contains(eml, "References: <t1@x> <t15@x>\r\n") {
+		t.Errorf("References header malformed:\n%s", eml)
+	}
+	if !strings.Contains(eml, "In-Reply-To: <t15@x>\r\n") {
+		t.Errorf("In-Reply-To should name the last reference:\n%s", eml)
+	}
+	// No refs => no thread headers at all, not empty ones.
+	bare := string(composeRFC822("a@x", "b@x", "s", "<t1@x>", nil, "body"))
+	if strings.Contains(bare, "References:") || strings.Contains(bare, "In-Reply-To:") {
+		t.Errorf("unthreaded message should carry no thread headers:\n%s", bare)
+	}
+}
