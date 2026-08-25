@@ -1,6 +1,8 @@
 # Testing perch
 
-Three levels, cheapest first.
+Three levels, cheapest first — these cover the **transport** (offline → GreenMail → a real
+mailbox). Prompt and session behaviour is a separate axis with no transport at all; see
+[Prompt & session behaviour](#prompt--session-behaviour-no-mailbox).
 
 ## Level 0 — automated tests (no setup, ~1s)
 
@@ -79,6 +81,169 @@ The production-representative test.
 6. Email the agent from a different, non-whitelisted address → silently ignored (check
    the perch log for `rejected sender`).
 
+## Prompt & session behaviour (no mailbox)
+
+Two harnesses run the **real** agent through the **real** `app.ProcessUnseen` pipeline with
+both network edges removed — no IMAP, no SMTP, no Docker. Use them to see what perch
+actually sends the agent.
+
+They cost agent tokens (unlike Level 1, which uses a stub), so they are not cheaper than
+Level 1 — just narrower.
+
+| | `mailtest` | `perch --testmode` |
+|---|---|---|
+| Build | `make build-mailtest` | `make build-testmode` |
+| Input | YAML file, one email per run | `POST /inject`, many per run |
+| Multi-turn | two runs, same workdir | any number, one process |
+| Outbound | captured, never sent | captured, never sent |
+
+`--testmode` is a separate build tag. A release binary has no `--testmode` flag and no
+injection endpoint, so this cannot leak into production.
+
+### Both features need a thread
+
+`prompt.contracts` and `prompt.strip_quoted` only differ between a **cold** session and a
+**resumed** one. A single email is always cold, so a one-shot run proves nothing about
+either. Turn on debug logging — the prompt is only logged at DEBUG:
+
+```yaml
+prompt:
+  contracts: on_resume
+  strip_quoted: on_resume     # default is never; must be enabled explicitly
+log_level: debug
+```
+
+### mailtest — one email per process
+
+```bash
+make build-mailtest
+mkdir -p /tmp/mtwd
+cat > /tmp/mt.yaml <<'EOF'
+from: chris@example.com
+subject: "quick question"
+body: |
+  What is the current date? Reply in one sentence.
+agent: claude          # claude | nanopi | pi — must be on PATH
+workdir: /tmp/mtwd     # NOT the perch repo; the agent writes here
+allow_from: ["*"]
+log_level: debug
+EOF
+
+./bin/mailtest -config /tmp/mt.yaml                  # run 1: cold session
+./bin/mailtest -config /tmp/mt.yaml 2>/tmp/r2.log    # run 2: resumes it
+```
+
+Run 2 resumes run 1 because the synthetic Message-ID is per-process (`<mtest-1@mailtest>`
+every time) and the session map persists at `<workdir>/mailtest-sessions.json`. **Both runs
+must use the same `workdir`.**
+
+```bash
+grep -oE '\-\-(session-id|resume)' /tmp/r2.log   # expect --resume
+grep -c "GREETING PROTOCOL" /tmp/r2.log          # expect 0 (contracts omitted)
+grep -c "unchanged from earlier" /tmp/r2.log     # expect 1 (the resume pointer)
+grep -o 'prompt_bytes=[0-9]*' /tmp/r2.log        # the actual saving
+```
+
+`-agent nanopi` overrides the config's `agent:` without editing the file.
+
+### --testmode — multi-turn threads over HTTP
+
+```bash
+make build-testmode
+bin/perch-testmode --testmode --testport 9876 --config ~/.perch/perch.yaml 2>&1 \
+  | tee /tmp/perch.log        # tee: the evidence lives in the log
+```
+
+Then, in another shell:
+
+```bash
+./testmode_send.sh -l /tmp/perch.log
+```
+
+`testmode_send.sh` drives a three-turn thread with a realistic 163/Foxmail reply shape —
+new text on top, quoted history under an `------ 原始邮件 ------` banner. Two turns are
+designed to fail visibly rather than only shifting a counter:
+
+- **turn 2** asks the agent to recall a number from turn 1 → wrong answer means the session
+  was not actually resumed.
+- **turn 3** asks for today's date → a stale date means `GROUNDING` is not reaching the
+  agent.
+
+Expected evidence for a clean three-turn run:
+
+| Signal | Count | Meaning |
+|---|---|---|
+| `GREETING PROTOCOL` | 1 | contracts only on the cold turn |
+| `ATTACHMENT PROTOCOL` | 1 | same |
+| `unchanged from earlier in this thread` | 2 | the resume pointer replaced them |
+| `SAFETY PROTOCOL (hard contract` | 3 | guardrail, sent every turn |
+| `GROUNDING (hard contract` | 3 | guardrail, sent every turn |
+| `stripped quoted history` | 2 | quote removed on the resumed turns |
+| `--session-id` / `--resume` | 1 / 2 | one cold spawn, two resumes |
+| `prompt_bytes` | 5265 → 3427 | ~1.8 KB (35%) saved per resumed turn |
+
+`prompt_bytes` is the most direct measure — it is the size of what the agent was actually
+handed. The protocol-string counts only corroborate it.
+
+Other flags:
+
+```bash
+./testmode_send.sh -1 "帮我看一下 X"    # one-off, no scenario
+./testmode_send.sh -p 9912             # non-default port
+./testmode_send.sh -r my-thread-2      # different thread root
+./testmode_send.sh -?                  # usage
+```
+
+To build a thread by hand, chain `message_id` into the next turn's `references`. Angle
+brackets are optional; whitespace inside an id is rejected:
+
+```bash
+C() { curl -s --noproxy 127.0.0.1 -X POST http://127.0.0.1:9876/inject \
+        -H 'Content-Type: application/json' -d "$1"; }
+C '{"from":"you@x","subject":"t","body":"记住 42","message_id":"<t1@x>"}'
+C '{"from":"you@x","subject":"t","body":"数字是多少？","message_id":"<t2@x>","references":["<t1@x>"]}'
+```
+
+The response echoes `message_id` and `thread_root`. **Two turns share a session exactly
+when they share `thread_root`** (`references[0]`, else the message's own id).
+
+### Reading the session map
+
+```bash
+cat /tmp/perch-sessions.json      # or whatever session_store points at
+```
+
+Keys look mangled because Go's JSON encoder escapes `<` and `>` by default, so
+the key for `<m1@163.com>` is stored as `\u003cm1@163.com\u003e`. The angle brackets are
+part of the Message-ID, so keep them if you hand-edit — a key without them will never
+match.
+
+Edit the file only while perch is stopped. Every registry change rewrites the whole map, so
+a running perch will overwrite your edit on the next new thread.
+
+The UUID version says who minted it:
+
+| Third group starts with | Minted by | Note |
+|---|---|---|
+| `4` | perch | used as-is by claude/pi |
+| `7` | the agent | nanopi minted it; perch adopted it |
+
+A **v4 entry under nanopi** is a stale entry nanopi never knew about. The next email in that
+thread logs `nanopi session lost; caller must retry cold`, perch restarts cold with the full
+contracts, adopts the new v7 id, and writes it back — so it self-heals in one round. Confirm
+by re-reading the file: the entry should now be v7.
+
+UUIDv7 embeds its creation time in the first 48 bits, so the map doubles as a "when did this
+thread start" record and can be pruned by age without extra bookkeeping:
+
+```bash
+python3 -c "
+import datetime,sys
+u=sys.argv[1]; p=u.split('-')
+print('v'+p[2][0], datetime.datetime.fromtimestamp(int(p[0]+p[1],16)/1000, datetime.UTC))" \
+  01a0378d-6d1c-7fb3-af1a-0c1555d0e53d
+```
+
 ## Troubleshooting
 
 - **`Unsafe Login` / login rejected on 163** — you used the password instead of the
@@ -88,6 +253,42 @@ The production-representative test.
   address only). An empty `ALLOW_FROM` denies everyone.
 - **`connection refused` in Level 1** — the container needs host networking
   (`--network host`, as in the demo) for `127.0.0.1` to reach it.
+
+### Harness gotchas
+
+Each of these produced a wrong conclusion at least once.
+
+- **Every turn looks cold** — the turns are not in one thread. `/inject` without
+  `message_id`/`references` mints a fresh id per call, so each injection is its own thread
+  and always `isNew=true`. `mailtest` needs the **same `workdir`** across runs.
+- **The counts are all zero** — `log_level` is not `debug`. The prompt and
+  `stripped quoted history` are DEBUG-only lines.
+- **`strip_quoted` does nothing** — its default is `never`. It must be enabled explicitly,
+  unlike `contracts`, which defaults to `on_resume`.
+- **Turn 1 is a resume** — the thread root already exists in `session_store` from an earlier
+  run. Use `-r <new-root>`, or clear `session_store`. Restarting the server is not enough:
+  the map is on disk.
+- **`curl` hangs or 502s on `127.0.0.1`** — `http_proxy` is set and the request went to the
+  proxy. Use `--noproxy 127.0.0.1`.
+- **The agent wrote files into the perch repo** — `workdir` pointed at the repo. Point it at
+  a scratch directory. `task_only: true` allows anything *inside* cwd by design, so cwd is
+  the blast radius.
+- **`grep -c -- "--resume"` reports a nonsense count** — the `--` was consumed as the
+  pattern and you counted every line containing `--`. Escape instead: `grep -c '\-\-resume'`.
+- **Sign-off reads `Best,\nthere`** — `mailtest.yaml` has no `email:` field, so
+  `agentDisplayName("")` falls back to `there`. Cosmetic; production derives the name from
+  `email:` (`agent_hellen@163.com` → `hellen`).
+- **Thread continuity vanished after a reboot** — `session_store` defaults to
+  `$TMPDIR/perch-sessions.json`, and many systems wipe `/tmp`. Point it somewhere durable
+  for a long-running deployment.
+- **Two forwards of the same chain answered as one conversation** — the session key is the
+  *thread root*, not the sender. Forwarding the same chain twice yields the same
+  `References[0]`, so both land in one agent session. Start a new email for a clean session.
+- **`pkill -f perch-testmode` killed your shell** — the pattern matches the command line of
+  the process running `pkill`. Use a character class: `pkill -f 'perch-testmod[e]'`.
+- **Replies never arrive in a real inbox under `--testmode`** — by design. `InjectSender`
+  holds no transport at all; the reply comes back in the `/inject` response. Use Level 1 or
+  2 to test actual delivery.
 
 ## Daemon mode
 
