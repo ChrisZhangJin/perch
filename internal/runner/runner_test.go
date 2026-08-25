@@ -124,18 +124,19 @@ func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
 // TestBuildPromptRequiresGrounding pins the anti-fabrication contract: the
 // prompt must tell the agent that the output-shaping rules govern what it
 // PRINTS, not whether it runs tools, and that factual claims must come from
-// a tool it actually ran. Regression for the 2026-08-12 incident where a
-// weak model (minimax-M3), under the "emit only the conclusion" framing,
-// skipped every tool call and fabricated command output — including a false
-// "No such file or directory" for a directory that existed. Without this
-// rule the prompt is pure output-shaping and never demands grounding.
+// a tool it actually ran.
 //
-// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
-// based splitter as the sole enforcement point. Re-enable or delete after
-// the simplified-prompt trial concludes.
-/*
+// Regression for 2026-08-12, where minimax-M3 under the "emit only the
+// conclusion" framing skipped every tool call and fabricated command output,
+// including "No such file or directory" for a directory that existed.
+//
+// This test was commented out on 2026-08-12 in the same change that dropped
+// the rule, so nothing was left to catch the recurrence — on 2026-08-25
+// nanopi answered "What is the current date?" with a date five months stale,
+// having never run `date`. Re-enabled with the rule; if the prompt is
+// simplified again, delete the rule and this test together and say why.
 func TestBuildPromptRequiresGrounding(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", "", PromptOpts{})
 	low := strings.ToLower(p)
 	// The print-vs-do distinction must be explicit.
 	if !strings.Contains(low, "what you print") || !strings.Contains(low, "what you do") {
@@ -149,8 +150,44 @@ func TestBuildPromptRequiresGrounding(t *testing.T) {
 	if !strings.Contains(low, "never invent") {
 		t.Errorf("prompt must forbid inventing command output, got:\n%s", p)
 	}
+	// The observed failure was a stale date, so name dates specifically.
+	if !strings.Contains(low, "date") {
+		t.Errorf("prompt must call out dates/times as things to look up, not recall, got:\n%s", p)
+	}
 }
-*/
+
+// TestGroundingSurvivesResume is the placement contract. GROUNDING is an
+// anti-fabrication guardrail, not a format convention, so prompt.contracts
+// must not strip it: a model deep into a thread is more likely to answer from
+// memory, not less. Same reasoning as SAFETY.
+func TestGroundingSurvivesResume(t *testing.T) {
+	warm := BuildPrompt("x@y", "X", "subj", "task", nil, "/reply", "agent_tommy@163.com", "/wd",
+		PromptOpts{TaskOnly: true, Contracts: false})
+	low := strings.ToLower(warm)
+	for _, want := range []string{"grounding", "safety protocol", "never invent"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("resumed prompt must still carry %q — it is a guardrail, not a contract", want)
+		}
+	}
+	// Sanity: the format contracts really are gone in this same prompt, so
+	// the assertions above are not passing because nothing was stripped.
+	if strings.Contains(warm, "GREETING PROTOCOL") {
+		t.Fatal("test is vacuous: contracts were not stripped")
+	}
+}
+
+// TestGroundingHasNoConfigKnob documents a deliberate omission: unlike
+// task_only, grounding is always on. Fabricating facts is never a mode an
+// operator wants, and a knob would invite turning it off to save tokens.
+func TestGroundingHasNoConfigKnob(t *testing.T) {
+	for _, opts := range []PromptOpts{
+		{}, {TaskOnly: true}, {Contracts: true}, {TaskOnly: true, Contracts: true},
+	} {
+		if p := BuildPrompt("x@y", "X", "s", "t", nil, "", "a@b", "", opts); !strings.Contains(p, "GROUNDING") {
+			t.Errorf("GROUNDING missing for opts %+v; it must not be switchable", opts)
+		}
+	}
+}
 
 // runnerFromStub wires a Runner that points at a stub binary instead of the
 // real claude binary, so the tests stay hermetic.
