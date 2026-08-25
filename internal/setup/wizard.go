@@ -266,6 +266,9 @@ func persist(cfg *config.Config) error {
 	if cfg.PromptContracts == "" {
 		cfg.PromptContracts = def.PromptContracts
 	}
+	if cfg.StripQuoted == "" {
+		cfg.StripQuoted = def.StripQuoted
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -299,7 +302,16 @@ func persist(cfg *config.Config) error {
 		"#               out of reply format.\n" +
 		"# The SAFETY PROTOCOL (ai_agent.task_only) is never affected by this.\n" +
 		"prompt:\n" +
-		"  contracts: " + cfg.PromptContracts + "\n\n" +
+		"  contracts: " + cfg.PromptContracts + "\n" +
+		"# strip_quoted: drop the quoted history a client appends on Reply\n" +
+		"# (「原始邮件」blocks, \"在 ... 写道：\", \"> \" lines, header blocks).\n" +
+		"#   never     — DEFAULT. Leave the body as received.\n" +
+		"#   on_resume — strip only when resuming a session, which already\n" +
+		"#               has those turns. A cold session may need the quote:\n" +
+		"#               a forwarded thread is sometimes the whole task.\n" +
+		"#   always    — strip unconditionally.\n" +
+		"# Ambiguous lines are left alone; a quote-only body is never stripped.\n" +
+		"  strip_quoted: " + cfg.StripQuoted + "\n\n" +
 		"# --- Whitelist ---\n" +
 		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
 		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +

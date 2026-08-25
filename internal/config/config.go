@@ -71,6 +71,36 @@ type Config struct {
 	// before the task body, and there is no supported way to turn it off.
 	// See ContractsFor.
 	PromptContracts string // "always" | "on_resume"
+	// StripQuoted controls removal of the quoted history an email client
+	// appends when the sender hits Reply. "never" (the default) leaves the
+	// body untouched; "on_resume" strips only when the agent session is being
+	// resumed, because the agent already has those turns; "always" strips
+	// unconditionally.
+	//
+	// on_resume is the meaningful setting. On a COLD session the quote is
+	// often the only context there is — someone forwards a thread to perch
+	// for the first time — so stripping it there loses the task itself.
+	StripQuoted string // "never" | "on_resume" | "always"
+}
+
+// Quoted-history strip modes. See Config.StripQuoted.
+const (
+	StripNever    = "never"
+	StripOnResume = "on_resume"
+	StripAlways   = "always"
+)
+
+// StripQuotedFor reports whether this run should strip the quoted history.
+// isNew is true when perch is opening a fresh agent session.
+func (c *Config) StripQuotedFor(isNew bool) bool {
+	switch c.StripQuoted {
+	case StripAlways:
+		return true
+	case StripOnResume:
+		return !isNew
+	default:
+		return false
+	}
 }
 
 // Prompt contract modes. See Config.PromptContracts.
@@ -96,8 +126,8 @@ func (c *Config) ContractsFor(isNew bool) bool {
 // are intentionally NOT here — applyYAML detects them via a raw yaml.Node
 // pass and emits a WARN (see Task 7). AuthCode is never read from disk.
 type yamlConfig struct {
-	Email              string        `yaml:"email"`
-	EmailProvider      struct {
+	Email         string `yaml:"email"`
+	EmailProvider struct {
 		Name string `yaml:"name"`
 	} `yaml:"email_provider"`
 	AIAgent struct {
@@ -110,7 +140,8 @@ type yamlConfig struct {
 		TaskOnly *bool `yaml:"task_only"`
 	} `yaml:"ai_agent"`
 	Prompt struct {
-		Contracts string `yaml:"contracts"`
+		Contracts   string `yaml:"contracts"`
+		StripQuoted string `yaml:"strip_quoted"`
 	} `yaml:"prompt"`
 	AllowFrom          []string      `yaml:"allow_from"`
 	PollInterval       time.Duration `yaml:"poll_interval"`
@@ -209,6 +240,7 @@ func Defaults() *Config {
 		LogLevel:           "info",
 		AgentTaskOnly:      true,
 		PromptContracts:    ContractsOnResume,
+		StripQuoted:        StripNever,
 	}
 }
 
@@ -293,6 +325,19 @@ func applyYAML(c *Config, path string) error {
 				"value", v, "want", ContractsAlways+"|"+ContractsOnResume,
 				"using", ContractsOnResume)
 			c.PromptContracts = ContractsOnResume
+		}
+	}
+	if v := y.Prompt.StripQuoted; v != "" {
+		switch v {
+		case StripNever, StripOnResume, StripAlways:
+			c.StripQuoted = v
+		default:
+			// Fall back to never: an unrecognised value must not silently
+			// start deleting parts of people's email.
+			slog.Warn("unknown prompt.strip_quoted value; using default",
+				"value", v, "want", StripNever+"|"+StripOnResume+"|"+StripAlways,
+				"using", StripNever)
+			c.StripQuoted = StripNever
 		}
 	}
 	if len(y.AllowFrom) > 0 {

@@ -126,7 +126,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		a.log.Info("received", "count", len(raws))
 	}
 	for _, raw := range raws {
-		m, err := message.Parse(bytes.NewReader(raw.Data), raw.UID, a.cfg.MaxPromptBytes, a.cfg.MaxAttachmentBytes)
+		m, err := message.Parse(bytes.NewReader(raw.Data), raw.UID, a.cfg.MaxAttachmentBytes)
 		if err != nil {
 			a.log.Error("parse failed", "uid", raw.UID, "err", err)
 			_ = a.mb.MarkSeen(ctx, raw.UID)
@@ -203,6 +203,29 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			}
 		}
 
+		originalBody := m.Body
+		// Body transformations, in this order. Stripping must come before the
+		// size cap: applied the other way round, a long thread's quoted
+		// history consumes MaxPromptBytes and the sender's actual request is
+		// what gets truncated away.
+		//
+		// Both are keyed on `cold`, not on isNew, so the cold-retry path
+		// below reruns them with the right answer: a fresh session has no
+		// history, so the quote may be the only context it gets.
+		applyBody := func(cold bool) {
+			body := m.Body
+			if a.cfg.StripQuotedFor(cold) {
+				stripped, removed := message.StripQuoted(body)
+				if removed > 0 {
+					a.log.Debug("stripped quoted history",
+						"from", m.From, "removed_bytes", removed, "kept_bytes", len(stripped))
+					body = stripped
+				}
+			}
+			m.Body = message.TruncateUTF8(body, a.cfg.MaxPromptBytes)
+		}
+		applyBody(isNew)
+
 		// buildPrompt is a closure so the cold-retry path below can rebuild
 		// with contracts forced on. Passing cold=true means "this run opens
 		// a fresh agent session", which is what decides whether the format
@@ -225,6 +248,10 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if errors.Is(err, runner.ErrSessionLost) && !isNew {
 			a.log.Warn("session lost; retrying with a cold session and full contracts",
 				"from", m.From, "stale_sid", sid)
+			// Rebuild the body too: a cold session has no history, so quoted
+			// text stripped for the resume has to come back.
+			m.Body = originalBody
+			applyBody(true)
 			out, nativeID, err = a.run.Run(ctx, buildPrompt(true), "", true)
 		}
 		if err != nil {

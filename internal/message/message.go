@@ -45,10 +45,21 @@ func (m *Message) ThreadRoot() string {
 }
 
 // Parse reads an RFC5322 message, collecting the first text/plain part as
-// Body and every attachment part into Attachments. maxBody truncates the
-// body; maxAttach (0 = unlimited) caps a single attachment so a huge file
-// can't exhaust memory — oversized attachments are dropped, not fatal.
-func Parse(r io.Reader, uid uint32, maxBody, maxAttach int) (*Message, error) {
+// Body and every attachment part into Attachments. maxAttach (0 = unlimited)
+// caps a single attachment so a huge file can't exhaust memory — oversized
+// attachments are dropped, not fatal.
+//
+// Body is returned in full. Parse used to also truncate it to MaxPromptBytes,
+// which forced the wrong order of operations once quoted-history stripping
+// arrived: the cap was spent on quoted text that was about to be thrown away,
+// so on a long thread the quote ate the budget and the sender's actual
+// request was what got cut. Callers now compose the transformations
+// themselves — StripQuoted first, then TruncateUTF8 — see app.ProcessUnseen.
+//
+// This costs nothing in memory safety: Parse already reads each part fully
+// into memory before any cap could apply. Only maxAttach ever bounded
+// allocation.
+func Parse(r io.Reader, uid uint32, maxAttach int) (*Message, error) {
 	mr, err := gomail.CreateReader(r)
 	if err != nil {
 		return nil, err
@@ -99,9 +110,6 @@ func Parse(r io.Reader, uid uint32, maxBody, maxAttach int) (*Message, error) {
 	}
 	if !haveText {
 		m.Body = fallback
-	}
-	if maxBody > 0 && len(m.Body) > maxBody {
-		m.Body = m.Body[:maxBody]
 	}
 	return m, nil
 }

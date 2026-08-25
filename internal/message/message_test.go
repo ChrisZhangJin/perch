@@ -13,7 +13,7 @@ func TestParseBasic(t *testing.T) {
 	}
 	defer f.Close()
 
-	m, err := Parse(f, 42, 1024, 0)
+	m, err := Parse(f, 42, 0)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestParseGBKBody(t *testing.T) {
 	}
 	defer f.Close()
 
-	m, err := Parse(f, 7, 4096, 0)
+	m, err := Parse(f, 7, 0)
 	if err != nil {
 		t.Fatalf("Parse GBK: %v", err)
 	}
@@ -72,15 +72,24 @@ func TestParseGBKBody(t *testing.T) {
 	}
 }
 
-func TestParseTruncatesBody(t *testing.T) {
+// TestParseReturnsFullBody pins the contract change made on 2026-08-25:
+// Parse no longer truncates. It used to cap Body at MaxPromptBytes, which
+// forced the wrong order once quoted-history stripping arrived — the cap was
+// spent on text about to be discarded, so a long thread's quote ate the
+// budget and the sender's actual request got cut. Callers now run
+// StripQuoted then TruncateUTF8 themselves.
+func TestParseReturnsFullBody(t *testing.T) {
 	f, _ := os.Open("testdata/basic.eml")
 	defer f.Close()
-	m, err := Parse(f, 1, 5, 0)
+	m, err := Parse(f, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Body) > 5 {
-		t.Errorf("body not truncated: len=%d", len(m.Body))
+	if len(m.Body) <= 5 {
+		t.Fatalf("fixture body is too short to prove anything: len=%d", len(m.Body))
+	}
+	if strings.TrimSpace(m.Body) == "" {
+		t.Error("body should be returned in full, not empty")
 	}
 }
 
@@ -91,7 +100,7 @@ func TestParseAttachments(t *testing.T) {
 	}
 	defer f.Close()
 
-	m, err := Parse(f, 9, 4096, 1<<20)
+	m, err := Parse(f, 9, 1<<20)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -122,7 +131,7 @@ func TestParseDropsOversizedAttachment(t *testing.T) {
 	defer f.Close()
 	// app.log is 12 bytes, evil.txt is 4 bytes. Cap at 3 so both exceed it
 	// and get dropped — the parse must survive and keep the body.
-	m, err := Parse(f, 9, 4096, 3)
+	m, err := Parse(f, 9, 3)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

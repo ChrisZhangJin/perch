@@ -73,3 +73,49 @@ func TestPromptContractsRejectsUnknownValue(t *testing.T) {
 		t.Errorf("unknown value gave %q, want fallback to on_resume", got)
 	}
 }
+
+// TestStripQuotedForModes pins the decision table app.ProcessUnseen relies on.
+func TestStripQuotedForModes(t *testing.T) {
+	for _, tc := range []struct {
+		mode  string
+		isNew bool
+		want  bool
+		why   string
+	}{
+		{StripNever, true, false, "never means never"},
+		{StripNever, false, false, "never means never"},
+		{StripOnResume, false, true, "resumed session already has those turns"},
+		{StripOnResume, true, false, "a cold session may need the quote as its only context"},
+		{StripAlways, true, true, "always means always"},
+		{StripAlways, false, true, "always means always"},
+		// Unset must fail SAFE, i.e. do not delete anything.
+		{"", true, false, "unset must not strip"},
+		{"", false, false, "unset must not strip"},
+	} {
+		c := &Config{StripQuoted: tc.mode}
+		if got := c.StripQuotedFor(tc.isNew); got != tc.want {
+			t.Errorf("StripQuoted=%q isNew=%v -> %v, want %v (%s)",
+				tc.mode, tc.isNew, got, tc.want, tc.why)
+		}
+	}
+}
+
+func TestStripQuotedDefaultIsNever(t *testing.T) {
+	if got := Defaults().StripQuoted; got != StripNever {
+		t.Errorf("default StripQuoted = %q, want %q — stripping must be opt-in", got, StripNever)
+	}
+}
+
+func TestStripQuotedFromYAML(t *testing.T) {
+	for in, want := range map[string]string{
+		"never": StripNever, "on_resume": StripOnResume, "always": StripAlways,
+	} {
+		if got := writeCfg(t, "prompt:\n  strip_quoted: "+in+"\n").StripQuoted; got != want {
+			t.Errorf("strip_quoted: %s -> %q, want %q", in, got, want)
+		}
+	}
+	// A typo must not silently enable deletion.
+	if got := writeCfg(t, "prompt:\n  strip_quoted: sometimes\n").StripQuoted; got != StripNever {
+		t.Errorf("unknown value gave %q, want fallback to never", got)
+	}
+}

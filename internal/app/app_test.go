@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
@@ -419,5 +420,190 @@ func TestProcessRetriesColdWithFullContracts(t *testing.T) {
 	}
 	if !strings.Contains(rs[1].Body, "after cold restart") {
 		t.Errorf("second reply should carry the retry's answer, got %q", testPreview(rs[1].Body))
+	}
+}
+
+// --- quoted-history stripping (config.StripQuoted) --------------------------
+
+// quotedEML builds a reply-with-quote in the thread rooted at <m1@163.com>.
+func quotedEML(msgID string, isRoot bool, newText, quoted string) []byte {
+	h := "From: alice@163.com\r\nSubject: hi\r\nMessage-ID: <" + msgID + ">\r\n"
+	if !isRoot {
+		h += "References: <m1@163.com>\r\n"
+	}
+	body := newText + "\r\n\r\n在 2026年8月23日 星期六, Bob <bob@x.com> 写道：\r\n> " + quoted + "\r\n"
+	return []byte(h + "Content-Type: text/plain\r\n\r\n" + body)
+}
+
+// TestProcessStripsQuotedOnResume is the feature: the second email in a
+// thread drops the quoted history, because the agent already replayed it.
+func TestProcessStripsQuotedOnResume(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nfirst", "Hi Alice,\n\nsecond"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().StripQuoted = config.StripOnResume
+
+	if err := mt.SendRaw(1, quotedEML("m1@163.com", true, "第一封的新内容", "很久以前的历史")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.SendRaw(2, quotedEML("m2@163.com", false, "第二封的新内容", "很久以前的历史")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(run.Prompts) != 2 {
+		t.Fatalf("expected 2 runner calls, got %d", len(run.Prompts))
+	}
+	// Cold session keeps the quote — it may be the only context there is.
+	if !strings.Contains(run.Prompts[0], "很久以前的历史") {
+		t.Error("cold session must keep the quoted history")
+	}
+	// Resumed session drops it but keeps the new request.
+	if strings.Contains(run.Prompts[1], "很久以前的历史") {
+		t.Error("resumed session should have stripped the quoted history")
+	}
+	if !strings.Contains(run.Prompts[1], "第二封的新内容") {
+		t.Error("the sender's new text must survive stripping")
+	}
+}
+
+// TestProcessNeverStripsByDefault pins the opt-in: with the default config,
+// bodies reach the agent exactly as received.
+func TestProcessNeverStripsByDefault(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok", "Hi Alice,\n\nok"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	// Do NOT set StripQuoted; Defaults() gives "never".
+
+	for i, root := range []bool{true, false} {
+		id := "m1@163.com"
+		if !root {
+			id = "m2@163.com"
+		}
+		if err := mt.SendRaw(uint32(i+1), quotedEML(id, root, "新内容", "历史内容")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mt.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range run.Prompts {
+		if !strings.Contains(run.Prompts[i], "历史内容") {
+			t.Errorf("prompt %d: default config must not strip anything", i)
+		}
+	}
+}
+
+// TestProcessStripsBeforeTruncatingLeavesNoFragment covers the one case where
+// the order of stripping and truncating actually changes the result.
+//
+// It is narrower than it first appears. Clients append the quote BELOW the new
+// text, and truncation keeps the beginning, so for an ordinary top-posted
+// reply either order yields the same body — the request survives and the
+// quote is discarded either way.
+//
+// The difference shows up when the cap lands INSIDE the quote marker.
+// Truncating first leaves a half-marker that StripQuoted can no longer
+// recognise, so the fragment rides along into the prompt. Stripping first
+// removes the quote while the marker is still intact and the cap then applies
+// to clean text.
+func TestProcessStripsBeforeTruncatingLeavesNoFragment(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nfirst", "Hi Alice,\n\nsecond"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	cfg := mt.App().Cfg()
+	cfg.StripQuoted = config.StripOnResume
+
+	const request = "请把上个季度的报表导出成 CSV 发给我。"
+	eml := quotedEML("m2@163.com", false, request, strings.Repeat("历史。", 200))
+	// Put the cap partway through the attribution line, so a truncate-first
+	// implementation would keep a marker fragment it can no longer match.
+	body := string(eml[strings.Index(string(eml), request):])
+	cfg.MaxPromptBytes = strings.Index(body, "写道") + 3
+
+	if err := mt.SendRaw(1, quotedEML("m1@163.com", true, request, "短历史")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.SendRaw(2, eml); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	p := run.Prompts[1]
+	if !strings.Contains(p, request) {
+		t.Errorf("the request should survive:\n%s", p)
+	}
+	if strings.Contains(p, "在 2026") || strings.Contains(p, "历史。") {
+		t.Errorf("a quote fragment rode along; stripping did not run before the cap:\n%s", p)
+	}
+}
+
+// TestProcessBodyIsValidUTF8AfterTruncation guards the other half of the old
+// truncation: m.Body[:maxBody] cut on a byte boundary, which for Chinese text
+// splits a rune two times in three and put invalid UTF-8 into the prompt.
+func TestProcessBodyIsValidUTF8AfterTruncation(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	// A cap that cannot land on a rune boundary for 3-byte characters.
+	mt.App().Cfg().MaxPromptBytes = 100
+
+	body := strings.Repeat("中文内容测试", 50)
+	eml := []byte("From: alice@163.com\r\nSubject: hi\r\nMessage-ID: <m1@163.com>\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" + body + "\r\n")
+	if err := mt.SendRaw(1, eml); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(run.Prompts[0]) {
+		t.Error("prompt contains invalid UTF-8; truncation split a multi-byte rune")
+	}
+}
+
+// TestProcessColdRetryRestoresQuotedHistory covers stripping's interaction
+// with the session-lost retry. The resumed attempt strips the quote because
+// the agent is assumed to have it in history; when that assumption turns out
+// to be false and perch restarts cold, the quote has to come back — the fresh
+// session has no history at all, and the quote may be the only context.
+func TestProcessColdRetryRestoresQuotedHistory(t *testing.T) {
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{"Hi Alice,\n\nfirst", "", "Hi Alice,\n\nafter cold restart"},
+		Errs: []error{nil, fmt.Errorf("%w: boom", runner.ErrSessionLost)},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().StripQuoted = config.StripOnResume
+
+	if err := mt.SendRaw(1, quotedEML("m1@163.com", true, "第一封", "历史内容")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.SendRaw(2, quotedEML("m2@163.com", false, "第二封", "历史内容")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(run.Prompts) != 3 {
+		t.Fatalf("expected 3 runner calls, got %d", len(run.Prompts))
+	}
+	if strings.Contains(run.Prompts[1], "历史内容") {
+		t.Error("call 2 is a resume and should have stripped the quote")
+	}
+	if !strings.Contains(run.Prompts[2], "历史内容") {
+		t.Error("the cold retry must restore the quote — a fresh session has no history to fall back on")
+	}
+	if !strings.Contains(run.Prompts[2], "第二封") {
+		t.Error("the cold retry lost the sender's new text")
 	}
 }
