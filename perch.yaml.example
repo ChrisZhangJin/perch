@@ -89,6 +89,38 @@ prompt:
   contracts: on_resume     # on_resume | always
   strip_quoted: never      # never | on_resume | always
 
+# --- Loop protection -------------------------------------------------------
+# Two mail robots answering each other never stop on their own — each side
+# politely replies to the other's reply, forever, and every round costs an
+# agent invocation on both sides. This happened in production between two
+# perch instances after a whitelist was widened to a whole domain.
+#
+# Four defences, in order of how much they can be trusted:
+#
+#   1. perch labels its own replies `Auto-Submitted: auto-replied` (RFC 3834).
+#      Always on. A compliant counterparty will not answer them.
+#   2. skip_automated ignores inbound mail that labels ITSELF machine
+#      generated: Auto-Submitted (anything but "no"), Precedence:
+#      bulk|list|junk, or a List-Id / List-Unsubscribe / List-Post header.
+#   3. Mail whose From is perch's own address is always ignored — no knob.
+#      Guards against bounces, a Cc back to itself, and a whitelist wide
+#      enough to match its own domain.
+#   4. max_replies_per_hour caps replies per thread. This is the only one
+#      that works against a robot which labels nothing at all, which is the
+#      common case. 0 disables it.
+#
+# Set skip_automated false only if something you WANT answered sets those
+# headers — a monitoring system or CI job mailing in a task legitimately sets
+# Auto-Submitted: auto-generated.
+#
+# The real first line of defence is still allow_from. A regex like
+# s".*@163.com" whitelists every address at that provider, including other
+# robots and perch's own mailbox.
+# No env override — YAML only.
+loop_guard:
+  skip_automated: true
+  max_replies_per_hour: 10
+
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone
 # (fail-closed, the safe default for env-only setups that never went

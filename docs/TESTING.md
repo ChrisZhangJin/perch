@@ -244,6 +244,55 @@ print('v'+p[2][0], datetime.datetime.fromtimestamp(int(p[0]+p[1],16)/1000, datet
   01a0378d-6d1c-7fb3-af1a-0c1555d0e53d
 ```
 
+### Loop protection
+
+Two mail robots answering each other never stop on their own. This happened in production
+between two perch instances after `allow_from` was widened to `s".*@163.com"`, which
+whitelisted every address at that provider — including another bot and perch's own mailbox.
+
+Four defences, weakest assumption first:
+
+| | Defence | Works against |
+|---|---|---|
+| 1 | perch stamps `Auto-Submitted: auto-replied` on everything it sends | a counterparty that honours RFC 3834 |
+| 2 | `loop_guard.skip_automated` drops inbound mail labelled machine-generated | a counterparty that labels itself |
+| 3 | mail from perch's own address is always dropped (no knob) | bounces, Cc-to-self, an over-wide whitelist |
+| 4 | `loop_guard.max_replies_per_hour` caps replies per thread | **a robot that labels nothing** — the common case |
+
+Only #4 catches the loop that actually occurred. #1–#3 all assume the other side is
+cooperative or identifiable.
+
+To exercise them, inject with the header under test. All three should log a
+`(loop guard)` WARN, run no agent, and still mark the message seen:
+
+```bash
+C() { curl -s --noproxy 127.0.0.1 -X POST http://127.0.0.1:9876/inject \
+        -H 'Content-Type: application/json' -d "$1"; }
+
+# #2 — needs a client that can set arbitrary headers; /inject cannot, so use
+# mailtest with a canned .eml, or verify via the unit tests:
+go test ./internal/app/ -run TestProcessSkipsAutomatedMail -v
+go test ./internal/message/ -run TestIsAutomated -v
+
+# #3 — set `from` to perch's own address
+C '{"from":"agent_hellen@163.com","subject":"x","body":"y"}'
+
+# #4 — same thread, more rounds than the cap
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  C "{\"from\":\"you@x\",\"subject\":\"t\",\"body\":\"round $i\",\
+      \"message_id\":\"<loop-$i@x>\",\"references\":[\"<loop-root@x>\"]}" >/dev/null
+done
+grep -c "thread reply cap reached" /tmp/perch.log     # expect 2 with the default cap of 10
+```
+
+`POST /inject` has no field for arbitrary headers, so #2 cannot be driven over HTTP — use
+the unit tests, or feed a canned `.eml` through `mailtest.SendRaw`.
+
+The cap is a **rolling hour, per thread**, and counts attempts rather than successful sends
+(a reply that fails at SMTP still consumed an agent run). It lives in memory, so a restart
+resets it — that bounds a loop within one run, which is the point; by the time you restart,
+you are already looking.
+
 ## Troubleshooting
 
 - **`Unsafe Login` / login rejected on 163** — you used the password instead of the
@@ -286,6 +335,13 @@ Each of these produced a wrong conclusion at least once.
   `References[0]`, so both land in one agent session. Start a new email for a clean session.
 - **`pkill -f perch-testmode` killed your shell** — the pattern matches the command line of
   the process running `pkill`. Use a character class: `pkill -f 'perch-testmod[e]'`.
+- **A whitelisted correspondent went quiet after a busy exchange** — the thread hit
+  `loop_guard.max_replies_per_hour` (default 10). Look for `thread reply cap reached`. Raise
+  it, or set 0 to disable, but understand that the cap is the only defence against a robot
+  that sets no headers.
+- **perch ignores a monitoring job's mail** — that job sets `Auto-Submitted: auto-generated`,
+  which `skip_automated` treats as a loop risk. Set `loop_guard.skip_automated: false`, and
+  rely on the per-thread cap instead.
 - **Replies never arrive in a real inbox under `--testmode`** — by design. `InjectSender`
   holds no transport at all; the reply comes back in the `/inject` response. Use Level 1 or
   2 to test actual delivery.

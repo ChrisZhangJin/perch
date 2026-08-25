@@ -268,7 +268,7 @@ func (b *bufReader) readLine() (string, error) {
 
 type bufWriter struct{ conn net.Conn }
 
-func newBufWriter(c net.Conn) *bufWriter { return &bufWriter{conn: c} }
+func newBufWriter(c net.Conn) *bufWriter  { return &bufWriter{conn: c} }
 func (b *bufWriter) writeString(s string) { _, _ = b.conn.Write([]byte(s)) }
 
 // plaintextDialer returns a fresh net.Conn to the fake SMTP listener. The
@@ -362,5 +362,35 @@ func TestReplySucceedsOnFirstTryNoRetry(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("hook should fire exactly once on success, got %d", calls)
+	}
+}
+
+// TestComposeStampsAutoSubmitted pins the outbound half of loop protection.
+// Every composer must emit RFC 3834's Auto-Submitted: auto-replied, so a
+// compliant counterparty does not answer perch's reply. Two robots that both
+// omit it exchange mail indefinitely.
+func TestComposeStampsAutoSubmitted(t *testing.T) {
+	const want = "Auto-Submitted: auto-replied\r\n"
+
+	plain := string(Compose("a@x", "b@x", "hi", "<i@x>", []string{"<i@x>"}, "body"))
+	if !strings.Contains(plain, want) {
+		t.Errorf("Compose is missing the header:\n%s", plain)
+	}
+
+	f := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	multi, err := ComposeWithAttachments("a@x", "b@x", "hi", "<i@x>", nil, "body", []string{f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(multi), want) {
+		t.Errorf("ComposeWithAttachments is missing the header:\n%s", multi)
+	}
+
+	fail := string(ComposeFailure("a@x", "b@x", "hi", "<i@x>", nil, "body"))
+	if !strings.Contains(fail, want) {
+		t.Errorf("ComposeFailure is missing the header:\n%s", fail)
 	}
 }

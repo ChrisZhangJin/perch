@@ -269,6 +269,12 @@ func persist(cfg *config.Config) error {
 	if cfg.StripQuoted == "" {
 		cfg.StripQuoted = def.StripQuoted
 	}
+	// MaxRepliesPerHour has a non-zero default, so a zero here is ambiguous:
+	// it could be "unset" or a deliberate "no cap". Treat it as unset, which
+	// is the safe reading — the alternative silently removes the backstop.
+	if cfg.MaxRepliesPerHour == 0 {
+		cfg.MaxRepliesPerHour = def.MaxRepliesPerHour
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -303,15 +309,32 @@ func persist(cfg *config.Config) error {
 		"# The SAFETY PROTOCOL (ai_agent.task_only) is never affected by this.\n" +
 		"prompt:\n" +
 		"  contracts: " + cfg.PromptContracts + "\n" +
-		"# strip_quoted: drop the quoted history a client appends on Reply\n" +
-		"# (「原始邮件」blocks, \"在 ... 写道：\", \"> \" lines, header blocks).\n" +
-		"#   never     — DEFAULT. Leave the body as received.\n" +
-		"#   on_resume — strip only when resuming a session, which already\n" +
-		"#               has those turns. A cold session may need the quote:\n" +
-		"#               a forwarded thread is sometimes the whole task.\n" +
-		"#   always    — strip unconditionally.\n" +
-		"# Ambiguous lines are left alone; a quote-only body is never stripped.\n" +
+		"  # strip_quoted: drop the quoted history a client appends on Reply\n" +
+		"  # (「原始邮件」blocks, \"在 ... 写道：\", \"> \" lines, header blocks).\n" +
+		"  #   never     — DEFAULT. Leave the body as received.\n" +
+		"  #   on_resume — strip only when resuming a session, which already\n" +
+		"  #               has those turns. A cold session may need the quote:\n" +
+		"  #               a forwarded thread is sometimes the whole task.\n" +
+		"  #   always    — strip unconditionally.\n" +
+		"  # Ambiguous lines are left alone; a quote-only body is never stripped.\n" +
 		"  strip_quoted: " + cfg.StripQuoted + "\n\n" +
+		"# --- Loop protection ---\n" +
+		"# Two mail robots answering each other never stop on their own. Each\n" +
+		"# round costs an agent invocation on both sides.\n" +
+		"#\n" +
+		"# skip_automated: ignore inbound mail that labels itself machine\n" +
+		"# generated (RFC 3834 Auto-Submitted, Precedence: bulk/list/junk,\n" +
+		"# List-* headers). Set false only if something you WANT answered sets\n" +
+		"# them — a monitoring job mailing in a task legitimately does.\n" +
+		"#\n" +
+		"# max_replies_per_hour: per-thread cap, the backstop for a robot that\n" +
+		"# labels nothing at all. 0 disables it. A human does not round-trip\n" +
+		"# one thread ten times an hour; a loop does it in minutes.\n" +
+		"#\n" +
+		"# Mail from perch's own address is always ignored, with no knob.\n" +
+		"loop_guard:\n" +
+		"  skip_automated: " + strconv.FormatBool(cfg.SkipAutomated) + "\n" +
+		"  max_replies_per_hour: " + strconv.FormatInt(int64(cfg.MaxRepliesPerHour), 10) + "\n\n" +
 		"# --- Whitelist ---\n" +
 		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
 		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +

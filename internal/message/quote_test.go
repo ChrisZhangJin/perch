@@ -284,3 +284,62 @@ func TestStripQuotedStillCutsRealAttributions(t *testing.T) {
 		})
 	}
 }
+
+// --- loop-protection headers ------------------------------------------------
+
+func parseBody(t *testing.T, extraHeaders string) *Message {
+	t.Helper()
+	raw := "From: bot@x.com\r\nSubject: hi\r\nMessage-ID: <b1@x>\r\n" +
+		extraHeaders + "Content-Type: text/plain\r\n\r\nbody\r\n"
+	m, err := Parse(strings.NewReader(raw), 1, 0)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return m
+}
+
+func TestIsAutomatedDetects(t *testing.T) {
+	for name, tc := range map[string]struct {
+		headers string
+		want    bool
+	}{
+		// RFC 3834: absent or "no" means human-generated.
+		"absent":                {"", false},
+		"auto-submitted no":     {"Auto-Submitted: no\r\n", false},
+		"auto-generated":        {"Auto-Submitted: auto-generated\r\n", true},
+		"auto-replied":          {"Auto-Submitted: auto-replied\r\n", true},
+		"auto-notified":         {"Auto-Submitted: auto-notified\r\n", true},
+		"with parameters":       {"Auto-Submitted: auto-replied; owner-token=abc\r\n", true},
+		"mixed case":            {"Auto-Submitted: Auto-Replied\r\n", true},
+		"precedence bulk":       {"Precedence: bulk\r\n", true},
+		"precedence list":       {"Precedence: list\r\n", true},
+		"precedence junk":       {"Precedence: junk\r\n", true},
+		"precedence urgent":     {"Precedence: urgent\r\n", false},
+		"list-id":               {"List-Id: <dev.example.com>\r\n", true},
+		"list-unsubscribe":      {"List-Unsubscribe: <mailto:x@y>\r\n", true},
+		"list-post":             {"List-Post: <mailto:x@y>\r\n", true},
+		"empty list-id ignored": {"List-Id: \r\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, why := parseBody(t, tc.headers).IsAutomated()
+			if got != tc.want {
+				t.Errorf("IsAutomated() = %v (%q), want %v for headers %q",
+					got, why, tc.want, tc.headers)
+			}
+			if got && why == "" {
+				t.Error("a positive result must explain itself for the log")
+			}
+		})
+	}
+}
+
+// TestPerchsOwnRepliesAreDetectable closes the loop with the replier: perch
+// stamps Auto-Submitted: auto-replied on what it sends, so a second perch
+// receiving it must classify it as automated. Two instances that both do this
+// cannot ping-pong.
+func TestPerchsOwnRepliesAreDetectable(t *testing.T) {
+	m := parseBody(t, "Auto-Submitted: auto-replied\r\n")
+	if automated, _ := m.IsAutomated(); !automated {
+		t.Error("perch must recognise the header perch itself sends")
+	}
+}

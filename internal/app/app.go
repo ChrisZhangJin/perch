@@ -55,6 +55,7 @@ type App struct {
 	rep      ReplySender
 	log      *slog.Logger
 	triggers []mailbox.Trigger
+	rate     *replyRate // per-thread reply cap; see loopguard.go
 	mu       sync.Mutex // guards ProcessUnseen (defensive; app drives it serially)
 }
 
@@ -62,7 +63,8 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	if len(triggers) == 0 {
 		triggers = []mailbox.Trigger{mailbox.TimerTrigger{Interval: cfg.PollInterval}}
 	}
-	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log, triggers: triggers}
+	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
+		triggers: triggers, rate: newReplyRate(time.Hour)}
 }
 
 // SessForTest returns the session registry wired into this App. Test-only;
@@ -125,6 +127,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 	if len(raws) > 0 {
 		a.log.Info("received", "count", len(raws))
 	}
+	a.rate.prune()
 	for _, raw := range raws {
 		m, err := message.Parse(bytes.NewReader(raw.Data), raw.UID, a.cfg.MaxAttachmentBytes)
 		if err != nil {
@@ -151,6 +154,36 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
+		// --- loop protection -------------------------------------------
+		// All three checks sit after the whitelist and before any agent work,
+		// so a loop costs a log line rather than an agent invocation.
+
+		// Self-addressed mail. Never legitimate, and not configurable: a
+		// bounce, a Cc back to ourselves, or a whitelist wide enough to match
+		// our own domain would otherwise have perch answering itself.
+		if a.cfg.Email != "" && strings.EqualFold(m.From, a.cfg.Email) {
+			a.log.Warn("skipping mail from our own address (loop guard)",
+				"from", m.From, "subject", m.Subject)
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
+		}
+		if a.cfg.SkipAutomated {
+			if automated, why := m.IsAutomated(); automated {
+				a.log.Warn("skipping machine-generated mail (loop guard)",
+					"from", m.From, "subject", m.Subject, "reason", why)
+				_ = a.mb.MarkSeen(ctx, m.UID)
+				continue
+			}
+		}
+		if ok, n := a.rate.Allow(m.ThreadRoot(), a.cfg.MaxRepliesPerHour); !ok {
+			a.log.Warn("thread reply cap reached; not replying (loop guard)",
+				"from", m.From, "subject", m.Subject, "thread", m.ThreadRoot(),
+				"replies_last_hour", n, "cap", a.cfg.MaxRepliesPerHour)
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
+		}
+		// ---------------------------------------------------------------
+
 		sid, isNew, err := a.sess.Resolve(m.ThreadRoot())
 		if err != nil {
 			a.log.Error("session resolve failed", "err", err)

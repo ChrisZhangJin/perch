@@ -668,3 +668,165 @@ func TestReplyDirIsAbsolute(t *testing.T) {
 	}
 	t.Error("could not find the reply-dir instruction in the prompt")
 }
+
+// --- loop protection --------------------------------------------------------
+
+// botEML is a reply from another mail robot: whitelisted sender, plausible
+// body, and whatever loop headers the test wants.
+func botEML(uid uint32, from, extraHeaders string) []byte {
+	return []byte("From: " + from + "\r\nSubject: Re: Hi\r\nMessage-ID: <bot" +
+		string(rune('0'+uid)) + "@x>\r\nReferences: <root@x>\r\n" + extraHeaders +
+		"Content-Type: text/plain\r\n\r\nThanks for confirming. No action needed.\r\n")
+}
+
+func TestProcessSkipsAutomatedMail(t *testing.T) {
+	for name, hdr := range map[string]string{
+		"auto-replied":   "Auto-Submitted: auto-replied\r\n",
+		"auto-generated": "Auto-Submitted: auto-generated\r\n",
+		"precedence":     "Precedence: bulk\r\n",
+		"mailing list":   "List-Id: <dev.example.com>\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nreplied"}}
+			mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+			if err := mt.SendRaw(1, botEML(1, "alice@163.com", hdr)); err != nil {
+				t.Fatal(err)
+			}
+			if err := mt.RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(run.Prompts) != 0 {
+				t.Errorf("the agent must not run on machine-generated mail (%d calls)", len(run.Prompts))
+			}
+			if len(mt.Replies()) != 0 {
+				t.Error("no reply may be sent to machine-generated mail")
+			}
+			// Still marked seen, or perch would re-read it every poll.
+			if seen := mt.SeenUIDs(); len(seen) != 1 {
+				t.Errorf("skipped mail must still be marked seen, got %v", seen)
+			}
+		})
+	}
+}
+
+// TestProcessAnswersAutomatedMailWhenAllowed covers the opt-out: a monitoring
+// job that mails in a task legitimately sets Auto-Submitted: auto-generated.
+func TestProcessAnswersAutomatedMailWhenAllowed(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nreplied"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().SkipAutomated = false
+
+	if err := mt.SendRaw(1, botEML(1, "alice@163.com", "Auto-Submitted: auto-generated\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Prompts) != 1 {
+		t.Errorf("with skip_automated off the agent should run, got %d calls", len(run.Prompts))
+	}
+}
+
+// TestProcessSkipsOwnAddress guards the self-loop: a bounce, a Cc back to
+// ourselves, or a whitelist wide enough to match our own domain. Not
+// configurable, so no opt-out is tested.
+func TestProcessSkipsOwnAddress(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi,\n\nreplied"}}
+	// The whitelist deliberately matches our own address, as `s".*@163.com"`
+	// did in production.
+	mt := newTestApp(t, []string{"*"}, run)
+	mt.App().Cfg().Email = "agent_hellen@163.com"
+
+	// Mixed case, because address comparison must be case-insensitive.
+	if err := mt.SendRaw(1, botEML(1, "Agent_Hellen@163.com", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Prompts) != 0 {
+		t.Errorf("perch must not answer itself, got %d agent calls", len(run.Prompts))
+	}
+}
+
+// TestProcessCapsRepliesPerThread reproduces the production loop: two robots
+// that label nothing, each answering the other. The header checks cannot see
+// it; only the per-thread cap stops it.
+func TestProcessCapsRepliesPerThread(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nthanks, no action needed"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().MaxRepliesPerHour = 3
+
+	// Six rounds of an unlabelled bot replying in the same thread.
+	for i := uint32(1); i <= 6; i++ {
+		if err := mt.SendRaw(i, botEML(i, "alice@163.com", "")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mt.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(run.Prompts) != 3 {
+		t.Errorf("the agent ran %d times; the cap of 3 should have stopped it", len(run.Prompts))
+	}
+	if got := len(mt.Replies()); got != 3 {
+		t.Errorf("sent %d replies, want 3", got)
+	}
+	// Everything is still marked seen — a capped thread must not pile up
+	// unread mail that gets reprocessed on the next poll.
+	if seen := mt.SeenUIDs(); len(seen) != 6 {
+		t.Errorf("all 6 messages should be marked seen, got %d", len(seen))
+	}
+}
+
+// TestProcessCapIsPerThreadNotGlobal: hitting the cap on a busy thread must
+// not silence unrelated correspondents.
+func TestProcessCapIsPerThreadNotGlobal(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().MaxRepliesPerHour = 2
+
+	for i := uint32(1); i <= 4; i++ {
+		if err := mt.SendRaw(i, botEML(i, "alice@163.com", "")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mt.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := len(run.Prompts)
+
+	// A different thread root entirely.
+	other := []byte("From: alice@163.com\r\nSubject: unrelated\r\nMessage-ID: <fresh@x>\r\n" +
+		"Content-Type: text/plain\r\n\r\na real question\r\n")
+	if err := mt.SendRaw(9, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Prompts) != before+1 {
+		t.Error("a capped thread must not block a different thread")
+	}
+}
+
+// TestProcessCapZeroDisablesIt keeps the escape hatch honest.
+func TestProcessCapZeroDisablesIt(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().MaxRepliesPerHour = 0
+
+	for i := uint32(1); i <= 5; i++ {
+		if err := mt.SendRaw(i, botEML(i, "alice@163.com", "")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mt.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(run.Prompts) != 5 {
+		t.Errorf("cap 0 means unlimited, got %d agent calls", len(run.Prompts))
+	}
+}

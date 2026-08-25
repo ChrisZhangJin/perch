@@ -34,3 +34,7 @@ perch.log
 *.log
 mailtest-sessions.json
 perch-sessions.json
+
+# agent working dirs (created when ai_agent.workdir is the repo, e.g. ".")
+/attachments/
+/reply/

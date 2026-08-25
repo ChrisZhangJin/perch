@@ -81,6 +81,23 @@ type Config struct {
 	// often the only context there is — someone forwards a thread to perch
 	// for the first time — so stripping it there loses the task itself.
 	StripQuoted string // "never" | "on_resume" | "always"
+
+	// SkipAutomated drops inbound mail that announces itself as machine
+	// generated (RFC 3834 Auto-Submitted, Precedence: bulk/list/junk,
+	// List-* headers) instead of running the agent on it. Default true.
+	//
+	// Turn it off only if something you WANT perch to answer sets those
+	// headers — a monitoring system or CI job mailing in a task legitimately
+	// sets Auto-Submitted: auto-generated.
+	SkipAutomated bool
+	// MaxRepliesPerHour caps replies per email thread per rolling hour.
+	// 0 disables the cap.
+	//
+	// This is the backstop for the case the header checks cannot see: a robot
+	// that sets no headers at all. Two such robots reply to each other
+	// forever, each one burning an agent invocation per round. A human does
+	// not round-trip one thread ten times an hour; a loop does it in minutes.
+	MaxRepliesPerHour int
 }
 
 // Quoted-history strip modes. See Config.StripQuoted.
@@ -143,6 +160,12 @@ type yamlConfig struct {
 		Contracts   string `yaml:"contracts"`
 		StripQuoted string `yaml:"strip_quoted"`
 	} `yaml:"prompt"`
+	LoopGuard struct {
+		// Pointer so an explicit `false` is distinguishable from "unset",
+		// which must keep the default of true.
+		SkipAutomated     *bool `yaml:"skip_automated"`
+		MaxRepliesPerHour *int  `yaml:"max_replies_per_hour"`
+	} `yaml:"loop_guard"`
 	AllowFrom          []string      `yaml:"allow_from"`
 	PollInterval       time.Duration `yaml:"poll_interval"`
 	TaskTimeout        time.Duration `yaml:"task_timeout"`
@@ -241,6 +264,8 @@ func Defaults() *Config {
 		AgentTaskOnly:      true,
 		PromptContracts:    ContractsOnResume,
 		StripQuoted:        StripNever,
+		SkipAutomated:      true,
+		MaxRepliesPerHour:  10,
 	}
 }
 
@@ -338,6 +363,17 @@ func applyYAML(c *Config, path string) error {
 				"value", v, "want", StripNever+"|"+StripOnResume+"|"+StripAlways,
 				"using", StripNever)
 			c.StripQuoted = StripNever
+		}
+	}
+	if v := y.LoopGuard.SkipAutomated; v != nil {
+		c.SkipAutomated = *v
+	}
+	if v := y.LoopGuard.MaxRepliesPerHour; v != nil {
+		if *v < 0 {
+			slog.Warn("loop_guard.max_replies_per_hour must not be negative; using default",
+				"value", *v, "using", Defaults().MaxRepliesPerHour)
+		} else {
+			c.MaxRepliesPerHour = *v
 		}
 	}
 	if len(y.AllowFrom) > 0 {

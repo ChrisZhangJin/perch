@@ -32,8 +32,40 @@ type Message struct {
 	References  []string
 	Subject     string
 	Date        time.Time // RFC5322 Date: header; zero if absent/unparseable
-	Body        string    // text/plain, truncated to maxBody
+	Body        string    // text/plain, in full (see Parse)
 	Attachments []Attachment
+
+	// Loop-protection headers, kept verbatim (lowercased, trimmed) so the
+	// caller decides policy. See IsAutomated.
+	AutoSubmitted string // RFC 3834 Auto-Submitted; "" when absent
+	Precedence    string // de-facto Precedence: bulk|list|junk
+	ListID        string // List-Id / List-Unsubscribe / List-Post presence
+}
+
+// IsAutomated reports whether this message announces itself as machine
+// generated, and why. Auto-replying to such mail is how two mail robots end
+// up in an unbounded exchange, each politely answering the other.
+//
+// RFC 3834: Auto-Submitted is absent or "no" for human-generated mail;
+// anything else ("auto-generated", "auto-replied", ...) means do not
+// auto-reply. Precedence and the List-* family are not standardised for this
+// but are what mailing lists and bulk senders actually set.
+//
+// This is a claim by the sender, not proof. A robot that sets no headers at
+// all — which is the common case — passes this check, so it cannot be the
+// only defence.
+func (m *Message) IsAutomated() (bool, string) {
+	if v := m.AutoSubmitted; v != "" && v != "no" {
+		return true, "Auto-Submitted: " + v
+	}
+	switch m.Precedence {
+	case "bulk", "list", "junk":
+		return true, "Precedence: " + m.Precedence
+	}
+	if m.ListID != "" {
+		return true, "mailing-list header: " + m.ListID
+	}
+	return false, ""
 }
 
 // ThreadRoot returns the first References id if present, else the message's own id.
@@ -77,6 +109,17 @@ func Parse(r io.Reader, uid uint32, maxAttach int) (*Message, error) {
 	m.References = allMsgIDs(h.Get("References"))
 	if d, err := h.Date(); err == nil {
 		m.Date = d
+	}
+	// Auto-Submitted carries optional parameters after a semicolon
+	// (RFC 3834 §5), e.g. "auto-replied; owner-token=...". Only the keyword
+	// matters here.
+	m.AutoSubmitted = headerKeyword(h.Get("Auto-Submitted"))
+	m.Precedence = headerKeyword(h.Get("Precedence"))
+	for _, k := range []string{"List-Id", "List-Unsubscribe", "List-Post"} {
+		if v := strings.TrimSpace(h.Get(k)); v != "" {
+			m.ListID = k
+			break
+		}
 	}
 
 	var fallback string
@@ -165,4 +208,11 @@ func allMsgIDs(s string) []string {
 		}
 	}
 	return out
+}
+
+// headerKeyword lowercases a header value and drops any ";"-delimited
+// parameters, leaving the bare keyword.
+func headerKeyword(v string) string {
+	kw, _, _ := strings.Cut(v, ";")
+	return strings.ToLower(strings.TrimSpace(kw))
 }

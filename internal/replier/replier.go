@@ -46,6 +46,11 @@ func composeHeaders(fromAddr, to, subject, inReplyTo string, references []string
 	if len(references) > 0 {
 		fmt.Fprintf(&b, "References: %s\r\n", sanitizeHeader(strings.Join(references, " ")))
 	}
+	// RFC 3834: label our own mail as an automatic reply so a compliant
+	// counterparty does not answer it. Two robots that both omit this reply
+	// to each other indefinitely — which is exactly what happened in
+	// production between two perch instances.
+	b.WriteString("Auto-Submitted: auto-replied\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: %s\r\n", contentType)
 	b.WriteString("\r\n")
@@ -74,6 +79,11 @@ func ComposeWithAttachments(fromAddr, to, subject, inReplyTo string, references 
 	if len(references) > 0 {
 		fmt.Fprintf(&buf, "References: %s\r\n", sanitizeHeader(strings.Join(references, " ")))
 	}
+	// RFC 3834: label our own mail as an automatic reply so a compliant
+	// counterparty does not answer it. Two robots that both omit this reply
+	// to each other indefinitely — which is exactly what happened in
+	// production between two perch instances.
+	buf.WriteString("Auto-Submitted: auto-replied\r\n")
 	buf.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; charset=utf-8; boundary=%q\r\n", mw.Boundary())
 	buf.WriteString("\r\n")
@@ -428,6 +438,9 @@ func ComposeFailure(fromAddr, to, subject, inReplyTo string, references []string
 	if len(references) > 0 {
 		fmt.Fprintf(&b, "References: %s\r\n", sanitizeHeader(strings.Join(references, " ")))
 	}
+	// A failure notice is machine generated too — same reasoning as the
+	// reply composers above.
+	b.WriteString("Auto-Submitted: auto-replied\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")
