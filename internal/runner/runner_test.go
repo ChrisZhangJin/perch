@@ -79,7 +79,10 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 // having never run `date`. Re-enabled with the rule; if the prompt is
 // simplified again, delete the rule and this test together and say why.
 func TestBuildPromptRequiresGrounding(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", "", PromptOpts{})
+	// Contracts:true — this pins the VERBOSE rule text sent on a cold
+	// session. The compacted resume form is covered by
+	// TestCompactGuardrailsKeepTheOperativeRules.
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", "", PromptOpts{Contracts: true})
 	low := strings.ToLower(p)
 	// The print-vs-do distinction must be explicit.
 	if !strings.Contains(low, "what you print") || !strings.Contains(low, "what you do") {
@@ -706,6 +709,78 @@ func TestWarnIfSensitiveWorkdir(t *testing.T) {
 		got := strings.Contains(buf.String(), "sensitive top-level path")
 		if got != c.warn {
 			t.Errorf("workdir=%q warn=%v, want %v; log:\n%s", c.workdir, got, c.warn, buf.String())
+		}
+	}
+}
+
+// TestCompactGuardrailsKeepTheOperativeRules pins what may and may not be
+// dropped when a session is resumed.
+//
+// The guardrails are compacted, not removed. What goes is teaching material
+// the agent read on turn 1 — the rationale, the worked `rm ~/foo.rpm` story,
+// the print-vs-do explanation. What stays is every rule the agent has to
+// apply: the cwd definition, the full refusal list, and the grounding
+// obligation. 813 of SAFETY's 2497 bytes were that one story, re-sent on
+// every email in a thread.
+func TestCompactGuardrailsKeepTheOperativeRules(t *testing.T) {
+	warm := BuildPrompt("x@y", "X", "subj", "task", nil, "/wd/reply", "agent_tommy@163.com", "/wd",
+		PromptOpts{TaskOnly: true, Contracts: false})
+	low := strings.ToLower(warm)
+
+	// Every refusal category must survive verbatim — this is the operative
+	// part of the guardrail, and dropping any line silently permits it.
+	for _, want := range []string{
+		"outside cwd", "installing or removing packages", "sudo",
+		"network calls to external hosts", "killing processes",
+		"credentials or ssh keys", "hard-to-reverse",
+	} {
+		if !strings.Contains(low, want) {
+			t.Errorf("compact SAFETY dropped a refusal rule: %q", want)
+		}
+	}
+	// The cwd definition is what makes "outside cwd" mean anything.
+	if !strings.Contains(warm, "/wd") {
+		t.Error("compact SAFETY must still state the working directory")
+	}
+	// Grounding's obligation survives even though its explanation does not.
+	for _, want := range []string{"grounding", "actually ran", "never invent", "date"} {
+		if !strings.Contains(low, want) {
+			t.Errorf("compact GROUNDING dropped %q", want)
+		}
+	}
+
+	// The teaching material is what we came to remove.
+	for _, gone := range []string{"Concrete example", "foo.rpm", "Judgment rule", "what you PRINT"} {
+		if strings.Contains(warm, gone) {
+			t.Errorf("compact form still carries teaching material: %q", gone)
+		}
+	}
+
+	// And it has to actually be smaller, or none of this bought anything.
+	cold := BuildPrompt("x@y", "X", "subj", "task", nil, "/wd/reply", "agent_tommy@163.com", "/wd",
+		PromptOpts{TaskOnly: true, Contracts: true})
+	if saved := len(cold) - len(warm); saved < 3000 {
+		t.Errorf("resume saved only %d bytes; expected ~4 KB", saved)
+	}
+}
+
+// TestAttachmentProtocolForbidsWritingTheBody pins the fix for a duplicate
+// attachment on every email: nanopi wrote its whole reply into the reply dir,
+// so each message arrived with an attachment repeating the body. Its own
+// summary of the directory read "reply/ — where my reply body goes first", so
+// the conditional "if the task calls for sending a file back" was not enough.
+func TestAttachmentProtocolForbidsWritingTheBody(t *testing.T) {
+	p := BuildPrompt("x@y", "X", "subj", "task", nil, "/wd/reply", "agent_tommy@163.com", "/wd",
+		PromptOpts{Contracts: true})
+	low := strings.ToLower(p)
+	for _, want := range []string{
+		"only for files the sender asked for",
+		"your reply body is your stdout, never a file",
+		"same content twice",
+		"leave the directory empty",
+	} {
+		if !strings.Contains(low, want) {
+			t.Errorf("attachment protocol is missing %q:\n%s", want, p)
 		}
 	}
 }

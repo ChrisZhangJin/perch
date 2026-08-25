@@ -66,10 +66,12 @@ type Config struct {
 	// and that cost compounds, since every turn is persisted into the
 	// session history and re-read on each later resume.
 	//
-	// The SAFETY PROTOCOL section is deliberately NOT covered by this knob:
-	// it is a guardrail whose effectiveness depends on sitting immediately
-	// before the task body, and there is no supported way to turn it off.
-	// See ContractsFor.
+	// The SAFETY and GROUNDING guardrails are never REMOVED by this knob —
+	// their effectiveness depends on sitting immediately before the task body,
+	// and there is no supported way to turn them off. On a resumed turn they
+	// are sent in compact form: the cwd definition and the full refusal list
+	// verbatim, without the rationale and worked example the agent already
+	// read on turn 1. See ContractsFor and runner.PromptOpts.
 	PromptContracts string // "always" | "on_resume"
 	// StripQuoted controls removal of the quoted history an email client
 	// appends when the sender hits Reply. "never" (the default) leaves the

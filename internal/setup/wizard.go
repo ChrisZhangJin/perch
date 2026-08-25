@@ -306,7 +306,9 @@ func persist(cfg *config.Config) error {
 		"#               turn is persisted and re-read on later resumes.\n" +
 		"#   always    — repeat on every email; use if long threads drift\n" +
 		"#               out of reply format.\n" +
-		"# The SAFETY PROTOCOL (ai_agent.task_only) is never affected by this.\n" +
+		"# SAFETY and GROUNDING are never removed by this, only compacted on a\n" +
+		"# resumed turn: cwd and the full refusal list stay, the rationale and\n" +
+		"# the worked example go.\n" +
 		"prompt:\n" +
 		"  contracts: " + cfg.PromptContracts + "\n" +
 		"  # strip_quoted: drop the quoted history a client appends on Reply\n" +
