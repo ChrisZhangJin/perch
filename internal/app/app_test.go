@@ -607,3 +607,64 @@ func TestProcessColdRetryRestoresQuotedHistory(t *testing.T) {
 		t.Error("the cold retry lost the sender's new text")
 	}
 }
+
+// TestProcessLogsAdoptedSessionID pins that after an agent mints its own
+// session id, the id perch reports and reuses is the adopted one — not the
+// placeholder it invented. The "task done" line used to print the stale
+// pre-adoption UUID, which sends anyone debugging a session to the wrong id.
+func TestProcessAdoptedIDIsUsedForRetry(t *testing.T) {
+	native := "01a037e8-ad3a-7820-ae1c-7dae8475b5c7"
+	// First output is a bare greeting, so IsDegenerateReply fires and the
+	// retry runs — that retry must resume the ADOPTED id.
+	run := &mailtest.ScriptedRunner{
+		Outs:   []string{"Hi Alice,", "Hi Alice,\n\nthe real answer"},
+		Native: native,
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	if err := mt.SendRaw(1, wlEMLBytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(run.SIDs) != 2 {
+		t.Fatalf("expected a retry after the degenerate reply, got %d calls", len(run.SIDs))
+	}
+	if run.SIDs[1] != native {
+		t.Errorf("retry resumed %q, want the adopted id %q", run.SIDs[1], native)
+	}
+	// And the registry agrees.
+	if got, _, _ := mt.App().SessForTest().Resolve("<m1@163.com>"); got != native {
+		t.Errorf("registry holds %q, want %q", got, native)
+	}
+}
+
+// TestReplyDirIsAbsolute pins the path that goes into the ATTACHMENT
+// PROTOCOL. A relative "reply" is ambiguous to the agent and couples perch's
+// cwd to the agent's cmd.Dir.
+func TestReplyDirIsAbsolute(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().AgentWorkdir = "." // the config value that produced "reply"
+
+	if _, err := mt.Send("alice@163.com", "agent@x", "hi", "body"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(run.Prompts[0], "ATTACHMENT PROTOCOL") {
+		t.Fatal("expected the attachment protocol in a cold prompt")
+	}
+	for _, line := range strings.Split(run.Prompts[0], "\n") {
+		if strings.Contains(line, "Write (or copy) the file into ") {
+			if !strings.Contains(line, "/reply") || strings.Contains(line, " reply using") {
+				t.Errorf("reply dir is not absolute in the prompt: %q", line)
+			}
+			return
+		}
+	}
+	t.Error("could not find the reply-dir instruction in the prompt")
+}

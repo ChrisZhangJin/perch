@@ -272,6 +272,12 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				a.log.Debug("adopted native session id",
 					"from", m.From, "old", sid, "new", nativeID)
 			}
+			// Track the adopted id locally even if Replace failed: the agent
+			// IS on nativeID now, so that is what a retry must resume and
+			// what "task done" should report. A failed Replace only means the
+			// registry still holds the old id, which the next email recovers
+			// from via the ErrSessionLost path above.
+			sid = nativeID
 		}
 		// Greeting protocol: the agent must open its reply with a salutation
 		// line (Hi/Hello + name, or Hi there for name-less senders).
@@ -297,10 +303,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if IsDegenerateReply(greeted) {
 			a.log.Warn("agent produced a greeting-only reply; retrying once",
 				"from", m.From, "subject", m.Subject, "preview", preview(out))
-			retrySid := sid
-			if nativeID != "" {
-				retrySid = nativeID
-			}
+			retrySid := sid // already the adopted id when the agent minted one
 			// cold=false: retrySid names a session the agent just took a turn
 			// in, so the contracts are already in its history.
 			if out2, nativeID2, rerr := a.run.Run(ctx, buildPrompt(false), retrySid, false); rerr != nil {
@@ -468,8 +471,21 @@ func appendRef(refs []string, id string) []string {
 
 // replyDir is the single staging directory an agent writes files into to have
 // them attached to its reply email.
+// replyDir returns the absolute path of the outbound staging directory.
+//
+// Absolute matters twice. The path goes into the ATTACHMENT PROTOCOL, and a
+// bare "reply" (what filepath.Join gives for a workdir of ".") reads as
+// ambiguous to a model that cannot know what "." resolves to — the SAFETY
+// section already resolves workdir for the same reason. It also decouples
+// perch's own cwd from the agent's: perch creates and scans this directory
+// while the agent writes into cmd.Dir, and with a relative path those only
+// agree as long as perch was launched from the workdir.
 func replyDir(workdir string) string {
-	return filepath.Join(workdir, "reply")
+	dir := filepath.Join(workdir, "reply")
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 // saveAttachments writes every inbound attachment to
