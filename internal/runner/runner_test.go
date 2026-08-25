@@ -44,82 +44,25 @@ func TestBuildPromptAttachmentHints(t *testing.T) {
 	}
 }
 
-// TestBuildPromptMentionsEmailBody pins the framing: the agent must know
-// its stdout IS the email body, otherwise it narrates CLI-style instead
-// of replying. Regression for the screenshot incident where the agent
-// wrote "I'll help you respond to Chris's email" as the reply.
-//
-// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
-// based splitter as the sole enforcement point. Re-enable or delete after
-// the simplified-prompt trial concludes.
-/*
-func TestBuildPromptMentionsEmailBody(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
-	for _, want := range []string{
-		"email",
-		"stdout",
-		"reply",
-		"concise",
-		"narrate",
-	} {
-		if !strings.Contains(strings.ToLower(p), want) {
-			t.Errorf("prompt should mention %q to set email-body framing, got:\n%s", want, p)
-		}
-	}
-}
-*/
+// TestBuildPromptMentionsEmailBody was removed on 2026-08-25, resolving the
+// 2026-08-12 "re-enable or delete" note. It pinned the words "stdout" and
+// "concise". The framing it protected still exists in different wording —
+// "write a polite email reply, not a CLI transcript", plus the GREETING
+// PROTOCOL paragraph that explains perch discards everything before the
+// greeting line — so the test was pinning vocabulary, not behaviour.
 
-// TestBuildPromptForbidsMetaCommentary pins an explicit anti-narration
-// rule in the prompt so a future edit can't quietly drop it. The rule
-// names the exact phrases the screenshot regression hit ("let me check",
-// "i will respond", etc.) — those phrases must appear in a "do NOT" rule.
-// Also pins the ZERO-thought rule (output of the work, not the work
-// itself) and the explicit ban on internal-reasoning summaries ("I'll
-// start by...", "Now I have...") — the second screenshot regression.
-// Without these, the model defaults to writing its scratchpad into
-// stdout and the email recipient reads the agent's thinking.
+// TestBuildPromptForbidsMetaCommentary was removed on 2026-08-25, resolving
+// the 2026-08-12 "re-enable or delete" note. Its rules ("do not narrate",
+// zero-thought, the named regression phrases) really are gone from the
+// prompt, but enforcement moved rather than vanished: ExtractBodyAfterGreeting
+// discards everything the model writes before the greeting line, so a
+// "Let me check..." preamble never reaches the human. That mechanism is
+// covered by app.TestExtractBodyAfterGreeting_DropsAuditPreamble.
 //
-// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
-// based splitter as the sole enforcement point. Re-enable or delete after
-// the simplified-prompt trial concludes.
-/*
-func TestBuildPromptForbidsMetaCommentary(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
-	low := strings.ToLower(p)
-	if !strings.Contains(low, "do not narrate") {
-		t.Errorf("prompt must contain a 'do not narrate' rule, got:\n%s", p)
-	}
-	// At least one of the regression phrases must be called out as banned.
-	hit := false
-	for _, phrase := range []string{"let me check", "i will respond", "let me first"} {
-		if strings.Contains(low, phrase) {
-			hit = true
-			break
-		}
-	}
-	if !hit {
-		t.Errorf("prompt should name a regression phrase ('let me check' or 'i will respond') as forbidden, got:\n%s", p)
-	}
-	// ZERO-thought rule — the second-screenshot fix. Without this, the
-	// model writes reasoning summaries ("I'll start by...", "Now I have...")
-	// into stdout and the human reads them as the agent's reply.
-	if !strings.Contains(low, "zero-thought") {
-		t.Errorf("prompt must contain the 'zero-thought' rule (output of the work, not the work itself), got:\n%s", p)
-	}
-	// Internal-reasoning ban — at least one of the screenshot phrases
-	// must be named as forbidden so a future edit can't quietly drop it.
-	hit = false
-	for _, phrase := range []string{"i'll start by", "now i have", "i need to check"} {
-		if strings.Contains(low, phrase) {
-			hit = true
-			break
-		}
-	}
-	if !hit {
-		t.Errorf("prompt should name an internal-reasoning phrase ('i'll start by' or 'now i have') as forbidden, got:\n%s", p)
-	}
-}
-*/
+// Contrast with GROUNDING, which WAS restored: a fabricated fact is silently
+// wrong and no downstream stage can detect it, whereas leaked narration is
+// merely ugly and the splitter removes it. That asymmetry is why only one of
+// these four came back.
 
 // TestBuildPromptRequiresGrounding pins the anti-fabrication contract: the
 // prompt must tell the agent that the output-shaping rules govern what it
@@ -544,21 +487,10 @@ func TestBuildPromptIncludesGreeting(t *testing.T) {
 	}
 }
 
-// TestBuildPromptGreetingFallback covers the no-From-name case (mailing
-// list, automated sender): the salutation guidance should still be there,
-// just without a specific name to drop in.
-//
-// TEMPORARILY DISABLED 2026-08-12: pinned the exact phrase "polite salutation",
-// which the simplified prompt no longer uses. Re-enable or delete after the
-// simplified-prompt trial concludes.
-/*
-func TestBuildPromptGreetingFallback(t *testing.T) {
-	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com", false)
-	if !strings.Contains(p, "polite salutation") {
-		t.Errorf("prompt should still mention politeness when fromName is empty, got:\n%s", p)
-	}
-}
-*/
+// TestBuildPromptGreetingFallback was removed on 2026-08-25, resolving the
+// 2026-08-12 "re-enable or delete" note: it pinned the exact phrase "polite
+// salutation", which the prompt no longer uses. The behaviour it cared about
+// is now asserted by TestBuildPromptNameLessSenderStillGetsSalutation below.
 
 // TestBuildPromptEnforcesGreetingProtocol pins the new hard contract: the
 // prompt must list the canonical greeting forms, name the rule as a hard
@@ -682,29 +614,30 @@ func TestBuildPromptNoSafetyProtocolWhenTaskOnlyOff(t *testing.T) {
 	}
 }
 
-// TestBuildPromptGreetingTimingAfterWork pins the timing clarification that
-// resolves the tension between "begin with a greeting" and "do the work
-// first". Regression for the 2026-08-12 run where a weak model read "begin
-// with the greeting line" literally, emitted "Hi Chris," as its first
-// tool-call-free message, and ended its turn before doing the task — perch
-// then shipped a bare greeting. The prompt must say the greeting belongs on
-// the FINAL result-bearing message and that a greeting-only reply is a
-// failure.
-//
-// TEMPORARILY DISABLED 2026-08-12: prompt simplified to trust the greeting-
-// based splitter as the sole enforcement point. Re-enable or delete after
-// the simplified-prompt trial concludes.
-/*
-func TestBuildPromptGreetingTimingAfterWork(t *testing.T) {
-	p := BuildPrompt("x@y", "X", "subj", "task", nil, "", "agent_tommy@163.com", false)
-	low := strings.ToLower(p)
-	for _, want := range []string{"do all of your tool work first", "only a greeting"} {
-		if !strings.Contains(low, want) {
-			t.Errorf("prompt must contain %q to fix greeting timing, got:\n%s", want, p)
-		}
+// TestBuildPromptNameLessSenderStillGetsSalutation replaces the deleted
+// TestBuildPromptGreetingFallback. When the From header carries no display
+// name (mailing lists, automated senders) the prompt must still ask for a
+// salutation and must offer the name-less "Hi there," form, otherwise the
+// model has no valid greeting to emit and ExtractBodyAfterGreeting finds
+// nothing to split on.
+func TestBuildPromptNameLessSenderStillGetsSalutation(t *testing.T) {
+	p := BuildPrompt("noreply@example.com", "", "subj", "body", nil, "", "agent_alice@163.com", "",
+		PromptOpts{Contracts: true})
+	if !strings.Contains(strings.ToLower(p), "salutation") {
+		t.Errorf("prompt must still ask for a salutation when fromName is empty, got:\n%s", p)
+	}
+	if !strings.Contains(p, "Hi there,") {
+		t.Errorf("prompt must offer the name-less greeting form, got:\n%s", p)
 	}
 }
-*/
+
+// TestBuildPromptGreetingTimingAfterWork was removed on 2026-08-25, resolving
+// the 2026-08-12 "re-enable or delete" note. The prompt no longer tells the
+// agent to finish its tool work before greeting; enforcement moved to runtime,
+// where app.IsDegenerateReply catches a greeting-only reply, retries once, and
+// refuses to email a bare greeting. Covered by app.TestIsDegenerateReply.
+// The prompt rule would still be cheaper than a second agent spawn, so this is
+// a cost tradeoff rather than a gap.
 
 // TestAgentDisplayName verifies the sign-off name derivation. The perp
 // convention is agent_<name>@<domain>; the helper strips the agent_
