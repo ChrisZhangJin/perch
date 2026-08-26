@@ -47,3 +47,6 @@ perch.yaml
 # agent working dirs (created when ai_agent.workdir is the repo, e.g. ".")
 /attachments/
 /reply/
+
+# Claude Code personal preferences (settings.json is the shared one)
+.claude/settings.local.json
