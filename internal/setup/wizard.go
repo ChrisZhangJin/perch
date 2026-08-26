@@ -275,6 +275,11 @@ func persist(cfg *config.Config) error {
 	if cfg.MaxRepliesPerHour == 0 {
 		cfg.MaxRepliesPerHour = def.MaxRepliesPerHour
 	}
+	// A non-positive hook timeout would mean "wait forever" for a hook that
+	// hangs, so a zero here is treated as unset, like the reply cap above.
+	if cfg.HookTimeout <= 0 {
+		cfg.HookTimeout = def.HookTimeout
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -356,6 +361,20 @@ func persist(cfg *config.Config) error {
 		"# you know the request landed while the real reply is still cooking.\n" +
 		"# Off by default — enabling it costs one extra agent run per inbound.\n" +
 		"long_task_ack: " + strconv.FormatBool(cfg.LongTaskAck) + "   # LONG_TASK_ACK\n\n" +
+		"# --- Hooks ---\n" +
+		"# on_email: a script perch runs for every inbound email it ACCEPTS,\n" +
+		"# just before the agent runs. Called with five positional arguments:\n" +
+		"#   $1 email_id (Message-Id, \"\" when the mail has none)\n" +
+		"#   $2 subject\n" +
+		"#   $3 body (as received, truncated at 64 KiB)\n" +
+		"#   $4 sender\n" +
+		"#   $5 new_thread | reply_thread\n" +
+		"# Observer only: a missing script, a non-zero exit or a timeout is\n" +
+		"# logged and the email is handled as usual. Runs with cwd = workdir.\n" +
+		"# Empty (the default) disables it. Env: ON_EMAIL_HOOK / HOOK_TIMEOUT\n" +
+		"hooks:\n" +
+		formatOnEmailHook(cfg.OnEmailHook) +
+		"  timeout: " + cfg.HookTimeout.String() + "\n\n" +
 		"# --- Logging ---\n" +
 		"log_level: " + cfg.LogLevel + "   # LOG_LEVEL (debug / info / warn / error)\n\n" +
 		"# --- Email handling ---\n" +
@@ -375,6 +394,39 @@ func persist(cfg *config.Config) error {
 		"   # TLS_INSECURE_SKIP_VERIFY\n"
 
 	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// formatAppendSystemPrompt renders the ai_agent.append_system_prompt line.
+// Unset writes the key commented out with an example path, so the operator
+// sees the knob and a filled-in form. A set value is written as a YAML block
+// scalar when it is multi-line (which literal role definitions always are) —
+// quoting or escaping that onto one line would be unreadable and easy to
+// corrupt by hand.
+func formatAppendSystemPrompt(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "  # append_system_prompt: /path/to/helpdesk.md\n"
+	}
+	if !strings.ContainsAny(v, "\n\r") {
+		return "  append_system_prompt: " + v + "\n"
+	}
+	var b strings.Builder
+	b.WriteString("  append_system_prompt: |\n")
+	for _, line := range strings.Split(strings.TrimRight(v, "\n"), "\n") {
+		b.WriteString("    " + strings.TrimRight(line, "\r") + "\n")
+	}
+	return b.String()
+}
+
+// formatOnEmailHook renders the hooks.on_email line. With no hook configured
+// it writes the key commented out with an example path, rather than an empty
+// value: the operator sees the knob and what a filled-in one looks like, and
+// there is no blank string to wonder about. The completeness test matches the
+// key either way.
+func formatOnEmailHook(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "  # on_email: /home/agent/record.sh\n"
+	}
+	return "  on_email: " + path + "\n"
 }
 
 // formatAllowFrom renders an AllowFrom slice as YAML list items. Empty

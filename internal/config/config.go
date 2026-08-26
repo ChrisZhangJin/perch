@@ -100,6 +100,39 @@ type Config struct {
 	// forever, each one burning an agent invocation per round. A human does
 	// not round-trip one thread ten times an hour; a loop does it in minutes.
 	MaxRepliesPerHour int
+
+	// AppendSystemPrompt is text layered onto the agent's own system prompt
+	// on every run (--append-system-prompt), for a standing role the agent
+	// keeps across emails and sessions: "you are the support desk, the task
+	// definitions live in ./tasks, never invent policy".
+	//
+	// The value is text-or-path, matching what pi's flag accepts: a
+	// single-line value naming a readable file is read as a file (and
+	// re-read on every email, so edits need no restart), anything else is
+	// used literally. Empty disables the flag.
+	//
+	// Agents that have not shipped the flag are detected at startup and the
+	// value is ignored with a WARN rather than failing every email. See
+	// runner.SystemPrompt and agent.SupportsAppendSystemPrompt.
+	AppendSystemPrompt string
+	// OnEmailHook is the path to a script perch runs for every inbound email
+	// it accepts, before the agent runs. Empty (the default) disables it.
+	//
+	// The script is called with positional arguments:
+	//
+	//	<email_id> <subject> <body> <sender> <new_thread|reply_thread>
+	//
+	// email_id is the Message-Id header, empty for mail that has none — the
+	// argument is passed anyway so later positions never shift. The hook is an
+	// observer, never a gate: its exit status is logged and otherwise ignored,
+	// and it only ever sees mail that already cleared the whitelist and the
+	// loop guards. See internal/hook.
+	OnEmailHook string
+	// HookTimeout bounds a single hook run (SIGTERM, then SIGKILL after 5s).
+	// Default 30s: long enough for a script that writes a file or curls a
+	// local endpoint, short enough that a hung hook doesn't stall the email
+	// queued behind it.
+	HookTimeout time.Duration
 }
 
 // Quoted-history strip modes. See Config.StripQuoted.
@@ -168,6 +201,13 @@ type yamlConfig struct {
 		SkipAutomated     *bool `yaml:"skip_automated"`
 		MaxRepliesPerHour *int  `yaml:"max_replies_per_hour"`
 	} `yaml:"loop_guard"`
+	Hooks struct {
+		OnEmail string `yaml:"on_email"`
+		// Timeout is a pointer so an explicit 0 (or a negative) is
+		// distinguishable from "unset" and can be rejected with a WARN
+		// instead of silently meaning "no timeout".
+		Timeout *time.Duration `yaml:"timeout"`
+	} `yaml:"hooks"`
 	AllowFrom          []string      `yaml:"allow_from"`
 	PollInterval       time.Duration `yaml:"poll_interval"`
 	TaskTimeout        time.Duration `yaml:"task_timeout"`
@@ -268,6 +308,7 @@ func Defaults() *Config {
 		StripQuoted:        StripNever,
 		SkipAutomated:      true,
 		MaxRepliesPerHour:  10,
+		HookTimeout:        30 * time.Second,
 	}
 }
 
@@ -376,6 +417,20 @@ func applyYAML(c *Config, path string) error {
 				"value", *v, "using", Defaults().MaxRepliesPerHour)
 		} else {
 			c.MaxRepliesPerHour = *v
+		}
+	}
+	if v := strings.TrimSpace(y.Hooks.OnEmail); v != "" {
+		c.OnEmailHook = v
+	}
+	if v := y.Hooks.Timeout; v != nil {
+		if *v <= 0 {
+			// A zero/negative timeout would mean "wait forever", which is the
+			// one thing this knob exists to prevent — a hung hook holding the
+			// mail loop. Keep the default and say so.
+			slog.Warn("hooks.timeout must be positive; using default",
+				"value", v.String(), "using", Defaults().HookTimeout.String())
+		} else {
+			c.HookTimeout = *v
 		}
 	}
 	if len(y.AllowFrom) > 0 {
@@ -507,6 +562,20 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		c.LogLevel = v
+	}
+	if v := os.Getenv("APPEND_SYSTEM_PROMPT"); strings.TrimSpace(v) != "" {
+		c.AppendSystemPrompt = v
+	}
+	if v := os.Getenv("ON_EMAIL_HOOK"); v != "" {
+		c.OnEmailHook = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HOOK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil && d > 0 {
+			c.HookTimeout = d
+		} else {
+			slog.Warn("HOOK_TIMEOUT must be a positive duration; using current value",
+				"value", v, "using", c.HookTimeout.String())
+		}
 	}
 	if v := os.Getenv("LONG_TASK_ACK"); v != "" {
 		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {

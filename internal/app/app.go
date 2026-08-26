@@ -16,6 +16,7 @@ import (
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/gate"
+	"github.com/ChrisZhangJin/perch/internal/hook"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/message"
 	"github.com/ChrisZhangJin/perch/internal/replier"
@@ -55,16 +56,26 @@ type App struct {
 	rep      ReplySender
 	log      *slog.Logger
 	triggers []mailbox.Trigger
-	rate     *replyRate // per-thread reply cap; see loopguard.go
-	mu       sync.Mutex // guards ProcessUnseen (defensive; app drives it serially)
+	rate     *replyRate   // per-thread reply cap; see loopguard.go
+	hook     *hook.Runner // optional on-email script; nil when unconfigured
+	mu       sync.Mutex   // guards ProcessUnseen (defensive; app drives it serially)
 }
 
+// New wires an App. The optional on-email hook is built here from cfg rather
+// than passed in, so every construction path — production, --testmode, the
+// mailtest harness — gets identical hook behaviour with no call-site change.
+// hook.New returns nil when cfg.OnEmailHook is empty and every hook method is
+// nil-safe, so "no hook configured" needs no branch downstream.
 func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, run TaskRunner, rep ReplySender, log *slog.Logger, triggers ...mailbox.Trigger) *App {
 	if len(triggers) == 0 {
 		triggers = []mailbox.Trigger{mailbox.TimerTrigger{Interval: cfg.PollInterval}}
 	}
+	h := hook.New(cfg.OnEmailHook, cfg.AgentWorkdir, cfg.HookTimeout, log)
+	if h != nil && log != nil {
+		log.Info("on-email hook enabled", "script", h.Path(), "timeout", h.Timeout())
+	}
 	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
-		triggers: triggers, rate: newReplyRate(time.Hour)}
+		triggers: triggers, rate: newReplyRate(time.Hour), hook: h}
 }
 
 // SessForTest returns the session registry wired into this App. Test-only;
@@ -188,6 +199,28 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if err != nil {
 			a.log.Error("session resolve failed", "err", err)
 			continue
+		}
+
+		// On-email hook (opt-in, cfg.OnEmailHook). Fired here — past the
+		// whitelist and the loop guards, past session resolution, before any
+		// agent work — for three reasons: the script only ever sees mail from
+		// trusted senders; isNew is what tells it new_thread vs reply_thread;
+		// and m.Body is still the body as received, before the quote-strip and
+		// truncation done for the prompt below.
+		//
+		// The hook is an observer. A missing script, a non-zero exit or a
+		// timeout is logged and the email proceeds exactly as it would have
+		// otherwise — an operator's recording script must never be able to
+		// stop perch answering mail.
+		if err := a.hook.Fire(ctx, hook.Event{
+			EmailID:   m.MessageID,
+			Subject:   m.Subject,
+			Body:      m.Body,
+			Sender:    m.From,
+			NewThread: isNew,
+		}); err != nil {
+			a.log.Warn("on-email hook failed; continuing",
+				"from", m.From, "subject", m.Subject, "err", err)
 		}
 
 		// Inbound attachments: persist so the agent can read them with its

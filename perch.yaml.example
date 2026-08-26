@@ -177,6 +177,38 @@ task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKI
 # Env override: LONG_TASK_ACK=true
 # long_task_ack: false
 
+# --- Hooks -----------------------------------------------------------------
+# on_email: a script perch runs for every inbound email it ACCEPTS, just
+# before the agent runs. Use it for side effects perch itself doesn't do —
+# record every new thread in a ledger, ping a phone, bump a counter.
+#
+# The script is called with five positional arguments:
+#
+#     $1  email_id      Message-Id header, e.g. <abc@163.com>
+#                       ("" when the email carries no Message-Id — the
+#                        argument is still passed, so $2..$5 never shift)
+#     $2  subject
+#     $3  body          text/plain, as received (before quote-stripping);
+#                       truncated at 64 KiB
+#     $4  sender        lowercased address, e.g. alice@163.com
+#     $5  new_thread    or reply_thread — whether this email opened a new
+#                       thread or continued one perch already has a session for
+#
+# Example ~/record.sh (chmod +x):
+#
+#     #!/usr/bin/env bash
+#     [ "$5" = new_thread ] || exit 0
+#     printf '%s\t%s\t%s\n' "$(date -Is)" "$4" "$2" >> "$HOME/perch-threads.tsv"
+#
+# The hook is an OBSERVER, never a gate: a missing script, a non-zero exit or
+# a run that outlives `timeout` is logged (WARN) and the email is handled
+# exactly as it would have been anyway. It only ever sees mail that already
+# cleared allow_from and the loop guards. Runs with cwd = ai_agent.workdir.
+# Env overrides: ON_EMAIL_HOOK, HOOK_TIMEOUT
+hooks:
+  # on_email: /home/agent/record.sh
+  timeout: 30s                          # HOOK_TIMEOUT (SIGTERM → 5s → SIGKILL)
+
 # --- Logging ---------------------------------------------------------------
 # debug surfaces the full prompt/response flow (including message bodies);
 # keep it at info or above on a real mailbox.

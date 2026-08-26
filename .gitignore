@@ -23,6 +23,11 @@ grant.code
 *.grant_code
 *_grant.code
 
+# local secret (hook credentials, e.g. Lark APP_ID/APP_SECRET)
+.env
+.env.*
+!.env.example
+
 # worktrees
 /.worktrees/
 
