@@ -175,12 +175,17 @@ Expected evidence for a clean three-turn run:
 |---|---|---|
 | `GREETING PROTOCOL` | 1 | contracts only on the cold turn |
 | `ATTACHMENT PROTOCOL` | 1 | same |
-| `unchanged from earlier in this thread` | 2 | the resume pointer replaced them |
+| `Reply format and attachment handling are unchanged` | 2 | the resume pointer replaced them |
 | `SAFETY PROTOCOL (hard contract` | 3 | guardrail, sent every turn |
 | `GROUNDING (hard contract` | 3 | guardrail, sent every turn |
+| `LANGUAGE (hard contract` | 3 | guardrail, sent every turn |
 | `stripped quoted history` | 2 | quote removed on the resumed turns |
 | `--session-id` / `--resume` | 1 / 2 | one cold spawn, two resumes |
-| `prompt_bytes` | 5265 → 3427 | ~1.8 KB (35%) saved per resumed turn |
+| `prompt_bytes` | 6367 → 1543 | ~4.8 KB (76%) saved per resumed turn |
+
+The `prompt_bytes` pair is scenario- and version-specific — the guardrails and
+contracts get edited, and the numbers move with them. Read the ratio, not the
+digits; `testmode_send.sh` recomputes both from your own run.
 
 `prompt_bytes` is the most direct measure — it is the size of what the agent was actually
 handed. The protocol-string counts only corroborate it.

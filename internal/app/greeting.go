@@ -28,16 +28,32 @@ var ErrNoGreeting = errors.New("agent stdout missing greeting line")
 // The full-line variant is preferred (it's what the prompt asks for);
 // the run-on variant is the fallback. Both live in the same regex.
 //
-// Examples that match (case-insensitive):
+// A Chinese branch matches the salutations a Chinese reply actually opens
+// with (see the LANGUAGE contract in runner.BuildPrompt: a Chinese email must
+// get a Chinese reply, and "Hi 小明," on top of Chinese prose reads as a
+// machine translation). Full-width comma and colon are accepted because both
+// are conventional there.
+//
+// Unlike the English branch, the Chinese one is anchored to the start of a
+// line. The English run-on tolerance exists for an observed failure mode; the
+// Chinese salutations are short, common substrings — "如果您好奇，" contains
+// "您好" followed by a comma — and matching those mid-line would truncate a
+// legitimate reply at an arbitrary sentence.
+//
+// Examples that match (case-insensitive for the ASCII branch):
 //
 //	Hi Chris,
 //	hello chris zhang jin,
-//	Hi 张进,
+//	Hi 小明,
 //	Hi there,
 //	"  hi Chris,  "
 //	"...report attached.Hi Chris Zhang Jin,\n"   ← run-on fallback
+//	您好 小明，
+//	你好，
+//	您好 Chris：
 var greetingRe = regexp.MustCompile(
-	`(?i:hi|hello)[ \t]+(?:there|[^\s,](?:[^\n,]*[^\s,])?)[ \t]*,[ \t]*\n`,
+	`(?i:hi|hello)[ \t]+(?:there|[^\s,](?:[^\n,]*[^\s,])?)[ \t]*,[ \t]*\n` +
+		`|(?m:^)[ \t]*(?:您好|你好|嗨|哈啰|哈喽)[^\n,，：:]{0,40}[,，：:][ \t]*\n`,
 )
 
 // greetingLineRe matches a greeting that occupies an ENTIRE line (whitespace
@@ -45,7 +61,10 @@ var greetingRe = regexp.MustCompile(
 // greeting" — a separate, stricter matcher than greetingRe (which tolerates
 // run-on prefixes).
 var greetingLineRe = regexp.MustCompile(
-	`^\s*(?i:hi|hello)\s+(?:there|[^\s,](?:[^\n,]*[^\s,])?)\s*,\s*$`,
+	`^\s*(?:` +
+		`(?i:hi|hello)\s+(?:there|[^\s,](?:[^\n,]*[^\s,])?)\s*,` +
+		`|(?:您好|你好|嗨|哈啰|哈喽)[^\n,，：:]{0,40}[,，：:]` +
+		`)\s*$`,
 )
 
 // ExtractBodyAfterGreeting locates the first line of agentStdout that

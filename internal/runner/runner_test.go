@@ -784,3 +784,65 @@ func TestAttachmentProtocolForbidsWritingTheBody(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildPromptRequiresLanguageMirroring pins the LANGUAGE contract added
+// 2026-08-25: a 126.com sender wrote a complaint in Chinese ("kulink的服务有
+// 严重的bug，我要投诉") and nanopi replied entirely in English. Nothing in the
+// prompt asked for the sender's language, and the surrounding framing ("Hi
+// <name>," / "Best,") is English, which reads as an instruction to write it.
+func TestBuildPromptRequiresLanguageMirroring(t *testing.T) {
+	p := BuildPrompt("sender@126.com", "小明", "我要投诉！", "服务有bug",
+		nil, "/reply", "kulink_support@163.com", "/wd",
+		PromptOpts{TaskOnly: true, Contracts: true})
+	for _, want := range []string{"LANGUAGE (hard contract", "same language"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("cold prompt must contain %q, got:\n%s", want, p)
+		}
+	}
+	// The English examples in the prompt must be disclaimed, or they read as
+	// the instruction they contradict.
+	if !strings.Contains(p, "not a request to answer in English") {
+		t.Errorf("prompt must disclaim its own English examples, got:\n%s", p)
+	}
+	// A Chinese reply opens with 您好/你好, so the greeting protocol has to
+	// offer those forms — otherwise LANGUAGE and GREETING PROTOCOL conflict
+	// and the agent has to pick one to violate.
+	for _, want := range []string{"您好 <name>，", "你好 <name>，"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("GREETING PROTOCOL must list %q alongside the English forms, got:\n%s", want, p)
+		}
+	}
+}
+
+// TestLanguageSurvivesResume: unlike the format contracts, LANGUAGE must be
+// re-sent on every turn — and for a reason the other guardrails don't have.
+// The answer can CHANGE mid-thread: the same thread can arrive in Chinese
+// today and English tomorrow, so a rule stated once in the cold turn's
+// history is the wrong shape.
+func TestLanguageSurvivesResume(t *testing.T) {
+	warm := BuildPrompt("sender@126.com", "小明", "我要投诉！", "服务有bug",
+		nil, "/reply", "kulink_support@163.com", "/wd",
+		PromptOpts{TaskOnly: true, Contracts: false})
+	if !strings.Contains(warm, "LANGUAGE (hard contract") {
+		t.Errorf("resumed prompt must still carry LANGUAGE, got:\n%s", warm)
+	}
+	// It must point at THIS email's body, not at what the thread started in.
+	if !strings.Contains(warm, "may differ from earlier turns") {
+		t.Errorf("resumed LANGUAGE must tell the agent to re-check this email's language, got:\n%s", warm)
+	}
+	if strings.Contains(warm, "GREETING PROTOCOL") {
+		t.Fatal("test is vacuous: contracts were not stripped")
+	}
+}
+
+// TestLanguageHasNoConfigKnob mirrors GROUNDING's rule: answering a human in
+// a language they did not write in is never a mode an operator wants.
+func TestLanguageHasNoConfigKnob(t *testing.T) {
+	for _, opts := range []PromptOpts{
+		{}, {TaskOnly: true}, {Contracts: true}, {TaskOnly: true, Contracts: true},
+	} {
+		if p := BuildPrompt("x@y", "X", "s", "t", nil, "", "a@b", "", opts); !strings.Contains(p, "LANGUAGE") {
+			t.Errorf("LANGUAGE missing for opts %+v; it must not be switchable", opts)
+		}
+	}
+}

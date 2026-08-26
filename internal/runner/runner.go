@@ -295,17 +295,40 @@ func BuildPrompt(from, fromName, subject, body string, attachments []string, rep
 	} else {
 		b.WriteString("GROUNDING (hard contract, unchanged): every factual claim must come from a tool you actually ran in THIS turn, the current date and time included — run a command, do not recall. Never invent output or report a value you did not check. \"I could not determine X\" beats a confident wrong X.\n\n")
 	}
+	// LANGUAGE is sent on every email, like SAFETY and GROUNDING and unlike
+	// the format contracts — and for a reason the others don't have: the
+	// answer can CHANGE from one email to the next. The same thread can arrive
+	// in Chinese today and English tomorrow, so a one-time instruction in the
+	// cold turn's history is the wrong shape; the rule has to be re-evaluated
+	// against the body in front of the agent.
+	//
+	// Regression 2026-08-25: a 126.com sender wrote "kulink的服务有严重的bug,
+	// 我要投诉" and nanopi answered entirely in English. Nothing in the prompt
+	// said otherwise, and the surrounding framing ("Hi <name>," / "Best,") is
+	// itself English, which reads as an instruction to write English.
 	if opts.Contracts {
-		name := agentDisplayName(agentEmail)
+		b.WriteString("LANGUAGE (hard contract): write the ENTIRE reply — greeting, body and sign-off — in the same language the sender used in the email body. A Chinese email gets a Chinese reply; an English email gets an English reply; the same applies to any other language.\n")
+		b.WriteString("The examples in this prompt are written in English only because this prompt is; they are not a request to answer in English. If the body mixes languages, follow the language the sender's actual request is written in. When in doubt, mirror the body.\n\n")
+	} else {
+		b.WriteString("LANGUAGE (hard contract, unchanged): reply in the same language the sender used in THIS email — greeting, body and sign-off. Check the body below; it may differ from earlier turns in this thread.\n\n")
+	}
+	if opts.Contracts {
+		name := AgentDisplayName(agentEmail)
 		greeting := "Hi"
 		if fromName != "" {
 			greeting = "Hi " + fromName + ","
 		}
 		b.WriteString("This is a real human on the other end — write a polite email reply, not a CLI transcript. ")
-		fmt.Fprintf(&b, "Open with a salutation (e.g. %q) and close with a sign-off (e.g. \"Best,\\n%s\").\n\n", greeting, name)
+		fmt.Fprintf(&b, "Open with a salutation (e.g. %q) and close with a sign-off (e.g. \"Best,\\n%s\") — both in the sender's language, per LANGUAGE above; keep your own name %q as-is.\n\n", greeting, name, name)
 		b.WriteString("GREETING PROTOCOL (hard contract): your reply MUST contain a greeting line, on its own line, matching one of these forms:\n")
 		b.WriteString("    Hi <name>,\n    Hello <name>,\n    Hi there,\n")
-		b.WriteString("where <name> is the sender's display name or email local-part (e.g. \"Hi Chris,\"). The greeting MUST start on a fresh line — put a blank line or at least a newline before it, do NOT run it onto the end of another sentence like \"...report attached.Hi Chris,\". Everything you write BEFORE this greeting line is silently discarded by perch on receipt — think, reason, narrate, whatever helps you produce a good answer. Only the greeting line and everything after it reaches the human.\n\n")
+		// The Chinese forms are listed because LANGUAGE above requires a
+		// Chinese reply to a Chinese email, and "Hi 小明," on top of an
+		// otherwise-Chinese email reads as a machine translation. perch's
+		// greeting scanner accepts both sets.
+		b.WriteString("and, when you are replying in Chinese:\n")
+		b.WriteString("    您好 <name>，\n    你好 <name>，\n")
+		b.WriteString("where <name> is the sender's display name or email local-part (e.g. \"Hi Chris,\" / \"您好 小明，\"). A Chinese greeting may end with the full-width comma (，) or colon (：). The greeting MUST start on a fresh line — put a blank line or at least a newline before it, do NOT run it onto the end of another sentence like \"...report attached.Hi Chris,\". Everything you write BEFORE this greeting line is silently discarded by perch on receipt — think, reason, narrate, whatever helps you produce a good answer. Only the greeting line and everything after it reaches the human.\n\n")
 		if replyDir != "" {
 			fmt.Fprintf(&b, "ATTACHMENT PROTOCOL (hard contract): if the task calls for sending a file back, the sequence is exactly:\n")
 			fmt.Fprintf(&b, "    1. Write (or copy) the file into %s using your file tools.\n", replyDir)

@@ -138,9 +138,13 @@ echo
 echo "--- log evidence ($LOG) ---"
 printf '  %-34s %s  (want 1: only turn 1)\n' "GREETING PROTOCOL"   "$(count 'GREETING PROTOCOL')"
 printf '  %-34s %s  (want 1: only turn 1)\n' "ATTACHMENT PROTOCOL" "$(count 'ATTACHMENT PROTOCOL')"
-printf '  %-34s %s  (want 2: turns 2-3)\n'   "resume pointer"      "$(count 'unchanged from earlier in this thread')"
+# Count the format-contract pointer specifically. 'unchanged from earlier in
+# this thread' also appears in the compacted SAFETY header, so the looser
+# pattern reported 4 for a clean 3-turn run and looked like a failure.
+printf '  %-34s %s  (want 2: turns 2-3)\n'   "resume pointer"      "$(count 'Reply format and attachment handling are unchanged')"
 printf '  %-34s %s  (want 3: every turn)\n'  "SAFETY PROTOCOL"     "$(count 'SAFETY PROTOCOL (hard contract')"
 printf '  %-34s %s  (want 3: every turn)\n'  "GROUNDING"           "$(count 'GROUNDING (hard contract')"
+printf '  %-34s %s  (want 3: every turn)\n'  "LANGUAGE"            "$(count 'LANGUAGE (hard contract')"
 printf '  %-34s %s  (want 2: turns 2-3)\n'   "stripped quoted history" "$(count 'stripped quoted history')"
 echo
 printf '  %-34s %s  (want 1: only turn 1)\n' "spawned with --session-id" "$(count '\-\-session-id')"

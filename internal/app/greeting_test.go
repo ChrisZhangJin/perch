@@ -94,8 +94,8 @@ func TestExtractBodyAfterGreeting_RejectsDroppedForms(t *testing.T) {
 }
 
 func TestExtractBodyAfterGreeting_ChineseName(t *testing.T) {
-	in := "Hi 张进,\n\n完成。\n"
-	out, err := ExtractBodyAfterGreeting(in, "张进")
+	in := "Hi 小明,\n\n完成。\n"
+	out, err := ExtractBodyAfterGreeting(in, "小明")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -201,6 +201,84 @@ func TestExtractBodyAfterGreeting_RejectsProseHi(t *testing.T) {
 		_, err := ExtractBodyAfterGreeting(in, "Chris")
 		if !errors.Is(err, ErrNoGreeting) {
 			t.Errorf("input %q: want ErrNoGreeting, got %v", in, err)
+		}
+	}
+}
+
+// --- Chinese salutations ----------------------------------------------------
+//
+// A Chinese email must get a Chinese reply (the LANGUAGE contract in
+// runner.BuildPrompt), and a Chinese reply opens with 您好/你好 — not "Hi".
+// If the scanner only knew the English forms, every Chinese reply would take
+// the missing-greeting path: perch logs a WARN and ships the raw stdout,
+// preamble and all. Reported 2026-08-25.
+
+func TestExtractBodyAfterGreeting_Chinese(t *testing.T) {
+	cases := []string{
+		"您好 小明，\n\n您反馈的问题已经记录。\n",
+		"你好，\n\n已经收到您的邮件。\n",
+		"您好 Chris：\n\n工单号 01a03867。\n",
+		"你好 小明:\n\n收到。\n", // half-width colon is accepted too
+	}
+	for _, in := range cases {
+		out, err := ExtractBodyAfterGreeting(in, "小明")
+		if err != nil {
+			t.Errorf("input %q: unexpected err %v", in, err)
+			continue
+		}
+		if out != in {
+			t.Errorf("input %q: want the whole reply back, got %q", in, out)
+		}
+	}
+}
+
+// TestExtractBodyAfterGreeting_ChineseDropsPreamble is the same contract the
+// English forms get: everything before the greeting is the agent's scratch
+// space and never reaches the human.
+func TestExtractBodyAfterGreeting_ChineseDropsPreamble(t *testing.T) {
+	in := "我先看一下工单系统的记录。\n检查完毕，可以回复了。\n\n您好 小明，\n\n" +
+		"您的投诉已经登记，工单号 01a03867。\n\nBest,\nkulink_support\n"
+	out, err := ExtractBodyAfterGreeting(in, "小明")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !strings.HasPrefix(out, "您好 小明，") {
+		t.Errorf("reply must start at the Chinese greeting, got %q", out)
+	}
+	if strings.Contains(out, "我先看一下") {
+		t.Errorf("pre-greeting narration leaked into the reply: %q", out)
+	}
+}
+
+// TestExtractBodyAfterGreeting_RejectsChineseProse is why the Chinese branch
+// is anchored to the start of a line and requires the comma to END the line:
+// 您好/你好 are short, common substrings, and matching them mid-sentence would
+// truncate a legitimate reply at an arbitrary clause.
+func TestExtractBodyAfterGreeting_RejectsChineseProse(t *testing.T) {
+	cases := []string{
+		"如果您好奇，可以查看文档。\n", // 您好 inside a word, mid-line
+		"您好世界，这不是问候。\n",   // comma does not end the line
+		"我说：你好。\n",        // no comma/colon terminator
+	}
+	for _, in := range cases {
+		if _, err := ExtractBodyAfterGreeting(in, "小明"); !errors.Is(err, ErrNoGreeting) {
+			t.Errorf("input %q: want ErrNoGreeting, got %v", in, err)
+		}
+	}
+}
+
+// TestIsDegenerateReplyChinese: the bare-greeting guard has to understand the
+// Chinese forms too, or a Chinese "您好，"-and-nothing-else run would be
+// emailed out instead of retried.
+func TestIsDegenerateReplyChinese(t *testing.T) {
+	for _, s := range []string{"您好 小明，", "您好 小明，\n", "你好，\n\n", "  您好 Chris：  \n"} {
+		if !IsDegenerateReply(s) {
+			t.Errorf("want degenerate for %q", s)
+		}
+	}
+	for _, s := range []string{"您好 小明，\n\n已经处理完成。\n", "你好，\n收到。"} {
+		if IsDegenerateReply(s) {
+			t.Errorf("want body-bearing for %q", s)
 		}
 	}
 }
