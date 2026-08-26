@@ -245,9 +245,12 @@ hooks:
 ```
 
 换自己的表就设 `LARK_APP_TOKEN` / `LARK_TABLE_ID`;`LARK_ONLY_NEW_THREADS=1`
-表示只记录每个线程的第一封。其余开关(`LARK_BASE_URL` 用于 Lark 国际版、
+表示只记录每个线程的第一封。tenant_access_token 会缓存在磁盘上(0600,文件名用
+app id 的摘要)并复用到快过期为止,所以大多数邮件只需要一次 HTTP 调用而不是两次
+(`LARK_NO_TOKEN_CACHE=1` 可关闭)。其余开关(`LARK_BASE_URL` 用于 Lark 国际版、
 `LARK_MAX_CONTENT`、`LARK_TIMEOUT`、`LARK_USE_ENV_PROXY` 等)见脚本开头的
-docstring。不需要真邮件也能测——按 perch 的调用方式直接跑:
+docstring;缓存部分有测试:`make test-hooks`。不需要真邮件也能测——按 perch 的
+调用方式直接跑:
 
 ```bash
 ./scripts/hooks/lark_bitable.py "<t1@163.com>" "test subject" "body text" alice@163.com new_thread

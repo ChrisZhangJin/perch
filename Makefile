@@ -22,7 +22,7 @@ UPX_FLAGS ?= --best --no-color
 GOOS   ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build build-all build-mailtest build-testmode compress test vet fmt tidy run clean
+.PHONY: all build build-all build-mailtest build-testmode compress test test-hooks vet fmt tidy run clean
 
 all: build
 
@@ -81,6 +81,12 @@ compress:
 ## test: run all tests
 test:
 	go test ./...
+
+## test-hooks: run the example hook scripts' own tests (python3, no network)
+## Not part of `test`: CI stays Go-only, and these only matter if you use the
+## scripts in scripts/hooks/.
+test-hooks:
+	python3 scripts/hooks/test_lark_bitable.py
 
 ## vet: run go vet
 vet:

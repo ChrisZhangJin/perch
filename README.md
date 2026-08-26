@@ -265,9 +265,12 @@ hooks:
 
 Set `LARK_APP_TOKEN` / `LARK_TABLE_ID` for your own table, and
 `LARK_ONLY_NEW_THREADS=1` to record only the first email of each thread. The
-script's docstring lists the rest (`LARK_BASE_URL` for a Lark-global tenant,
-`LARK_MAX_CONTENT`, `LARK_TIMEOUT`, `LARK_USE_ENV_PROXY`, …). Test it without
-any email traffic by calling it the way perch does:
+tenant_access_token is cached on disk (0600, keyed by a digest of the app id)
+and reused until shortly before it expires, so most emails cost one HTTP call
+instead of two — `LARK_NO_TOKEN_CACHE=1` turns that off. The script's docstring
+lists the rest (`LARK_BASE_URL` for a Lark-global tenant, `LARK_MAX_CONTENT`,
+`LARK_TIMEOUT`, `LARK_USE_ENV_PROXY`, …); `make test-hooks` covers the cache.
+Test it without any email traffic by calling it the way perch does:
 
 ```bash
 ./scripts/hooks/lark_bitable.py "<t1@163.com>" "test subject" "body text" alice@163.com new_thread

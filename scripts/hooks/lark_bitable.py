@@ -26,15 +26,21 @@ argv, so they don't show up in `ps`:
     APP_ID=cli_xxxxxxxx
     APP_SECRET=xxxxxxxx
 
+The tenant_access_token is cached on disk (0600, keyed by a digest of app_id)
+and reused until shortly before it expires, so most emails cost one HTTP call
+instead of two. Set LARK_NO_TOKEN_CACHE=1 to disable it.
+
 Stdlib only — no pip install on the host running perch.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -80,6 +86,21 @@ USE_ENV_PROXY = os.environ.get("LARK_USE_ENV_PROXY", "0") == "1"
 
 # Lark error codes worth a second attempt: rate limits and internal errors.
 RETRYABLE_CODES = {99991400, 1254290, 1254291, 1255001, 1255040}
+# ...and the ones that mean "this token is no good": expired, revoked, or
+# invalidated because the app was republished or its secret rotated. These are
+# not retryable with the SAME token — the fix is to throw the cache away and
+# fetch a fresh one, which is what the caller does.
+INVALID_TOKEN_CODES = {99991661, 99991663, 99991664, 99991668}
+
+# Where the cached tenant_access_token lives. Keyed by a digest of app_id
+# rather than the id itself: /tmp is world-listable, and the filename would
+# otherwise advertise which Lark app this host talks to.
+TOKEN_CACHE = os.environ.get("LARK_TOKEN_CACHE", "")
+NO_TOKEN_CACHE = os.environ.get("LARK_NO_TOKEN_CACHE", "0") == "1"
+# Refresh this many seconds before the server's stated expiry. Without a
+# margin, a token that is valid when the request is built can be expired by
+# the time it arrives.
+TOKEN_MARGIN = int(os.environ.get("LARK_TOKEN_MARGIN", "300"))
 
 
 def log(msg: str) -> None:
@@ -130,6 +151,26 @@ def env_candidates() -> list[Path]:
     ]
 
 
+class LarkError(RuntimeError):
+    """A failed API call. `code` is Lark's business code (0 means success, so
+    never that here); `http` is the HTTP status when the failure was at that
+    level. Both default to 0 for transport failures, where neither applies.
+
+    Typed because the caller has to distinguish one specific case — a token
+    the server no longer accepts — from every other failure, and matching on
+    a formatted message string to do that is how that check silently stops
+    working the day the wording changes.
+    """
+
+    def __init__(self, message: str, code: int = 0, http: int = 0):
+        super().__init__(message)
+        self.code = code
+        self.http = http
+
+    def is_bad_token(self) -> bool:
+        return self.http == 401 or self.code in INVALID_TOKEN_CODES
+
+
 def post(url: str, payload: dict, token: str | None) -> dict:
     """POST JSON, return the decoded body. Retries transient failures."""
     data = json.dumps(payload).encode("utf-8")
@@ -151,33 +192,89 @@ def post(url: str, payload: dict, token: str | None) -> dict:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
-            last = RuntimeError(f"HTTP {exc.code}: {detail}")
+            last = LarkError(f"HTTP {exc.code}: {detail}", http=exc.code)
             if 500 <= exc.code < 600:
                 continue
             raise last from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last = RuntimeError(f"{type(exc).__name__}: {exc}")
+            last = LarkError(f"{type(exc).__name__}: {exc}")
             continue
 
         code = body.get("code", -1)
         if code == 0:
             return body
         msg = body.get("msg", "")
-        last = RuntimeError(f"lark code {code}: {msg}")
+        last = LarkError(f"lark code {code}: {msg}", code=code)
         if code in RETRYABLE_CODES:
             continue
         raise last
 
-    raise last if last else RuntimeError("request failed with no error recorded")
+    raise last if last else LarkError("request failed with no error recorded")
 
 
-def tenant_token(app_id: str, app_secret: str) -> str:
-    """Exchange app credentials for a tenant_access_token (valid ~2h).
+def cache_path(app_id: str) -> Path:
+    """Path of the token cache for this app."""
+    if TOKEN_CACHE:
+        return Path(TOKEN_CACHE).expanduser()
+    digest = hashlib.sha256(app_id.encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"lark-token-{digest}.json"
 
-    Not cached: a cache file shared by concurrent hook runs buys one saved
-    request and costs a locking problem. If your volume ever makes that matter,
-    cache to a tmpfile keyed by app_id with an expiry a few minutes short of
-    the returned `expire`.
+
+def read_cached_token(path: Path) -> str:
+    """Return a cached token that is still comfortably valid, else "".
+
+    Every failure mode here — missing file, truncated JSON, a dict with the
+    wrong shape, a clock that moved — resolves to "" and a fresh fetch. A
+    cache is an optimisation; it must never be able to break the caller.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        token = str(data["token"])
+        expires_at = float(data["expires_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    if not token or time.time() >= expires_at:
+        return ""
+    return token
+
+
+def write_cached_token(path: Path, token: str, expire_seconds: int) -> None:
+    """Persist the token with its computed expiry, 0600, atomically.
+
+    Atomic because two hook runs can overlap: each email is its own process,
+    so a concurrent refresh is normal. The race is benign — both tokens are
+    valid and last-writer-wins — but a half-written file read by a third
+    process would not be, hence write-then-rename rather than write-in-place.
+    Deliberately no lock: the contention window is one HTTP call every ~40
+    minutes, and a lock file would add a failure mode worth more than the
+    duplicate request it saves.
+    """
+    expires_at = time.time() + max(0, expire_seconds - TOKEN_MARGIN)
+    payload = json.dumps({"token": token, "expires_at": expires_at})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".lark-token-")
+        try:
+            os.fchmod(fd, 0o600)  # the file IS a credential
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except OSError as exc:
+        # A cache we cannot write is a slower hook, not a broken one.
+        log(f"could not cache the token at {path}: {exc}")
+
+
+def fetch_token(app_id: str, app_secret: str) -> tuple[str, int]:
+    """Exchange app credentials for a tenant_access_token.
+
+    Returns (token, expire_seconds). `expire` is the token's REMAINING life,
+    not a fixed TTL: Lark hands back an already-issued token when one is live,
+    so the value shrinks on repeat calls (observed: 2420s on a ~2h token).
+    Treating it as a constant would cache a nearly-dead token for its full
+    nominal lifetime.
     """
     body = post(
         f"{BASE_URL}/auth/v3/tenant_access_token/internal",
@@ -186,8 +283,41 @@ def tenant_token(app_id: str, app_secret: str) -> str:
     )
     token = body.get("tenant_access_token", "")
     if not token:
-        raise RuntimeError(f"no tenant_access_token in response: {body}")
+        raise LarkError(f"no tenant_access_token in response: {body}")
+    try:
+        expire = int(body.get("expire", 0))
+    except (TypeError, ValueError):
+        expire = 0
+    return token, expire
+
+
+def tenant_token(app_id: str, app_secret: str, refresh: bool = False) -> str:
+    """The token to use, from cache when one is live.
+
+    Each email is a separate process, so the cache has to be on disk; see
+    write_cached_token for why there is no lock. refresh=True skips the cache
+    and replaces it — that is the recovery path for a token the server has
+    stopped accepting.
+    """
+    path = cache_path(app_id)
+    if NO_TOKEN_CACHE:
+        return fetch_token(app_id, app_secret)[0]
+    if not refresh:
+        cached = read_cached_token(path)
+        if cached:
+            return cached
+    token, expire = fetch_token(app_id, app_secret)
+    if expire > TOKEN_MARGIN:
+        write_cached_token(path, token, expire)
     return token
+
+
+def drop_cached_token(app_id: str) -> None:
+    """Remove the cache after the server rejected what it held."""
+    try:
+        cache_path(app_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def create_record(token: str, fields: dict) -> str:
@@ -255,7 +385,18 @@ def main(argv: list[str]) -> int:
 
     try:
         token = tenant_token(app_id, app_secret)
-        record_id = create_record(token, fields)
+        try:
+            record_id = create_record(token, fields)
+        except LarkError as exc:
+            if not exc.is_bad_token():
+                raise
+            # The cached token was rejected — the app was republished, its
+            # secret rotated, or an admin revoked it. Without this branch a
+            # stale cache turns "one slow call per email" into "every email
+            # fails until someone deletes a file in /tmp".
+            log(f"cached token rejected ({exc}); refetching")
+            drop_cached_token(app_id)
+            record_id = create_record(tenant_token(app_id, app_secret, refresh=True), fields)
     except Exception as exc:  # noqa: BLE001 — the message is the product here
         log(f"failed to record {fields[F_TICKET_NO]} from {sender!r}: {exc}")
         return 1
