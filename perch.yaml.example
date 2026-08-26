@@ -51,6 +51,27 @@ ai_agent:
                        # etc.) are refused UNLESS destruction IS the stated
                        # task. A light guardrail against email-body-borne
                        # side-requests; set false to disable.
+  #
+  # append_system_prompt: text layered onto the AGENT'S OWN system prompt on
+  # every run (--append-system-prompt), for a standing role that outlives any
+  # single email — "you are the support desk, the task definitions live in
+  # ./tasks, never invent policy". This is NOT the per-email prompt perch
+  # builds (that one carries SAFETY / GROUNDING / LANGUAGE and the reply
+  # format); keep the two from contradicting each other.
+  #
+  # The value is text-or-path: a single-line value naming a readable file is
+  # read as a file, anything else is used literally. A file is re-read on
+  # every email, so edits take effect on the next message with no restart.
+  # A fill-in-the-blanks help-desk definition ships at helpdesk.md.example
+  # (with a sample task file in tasks.example/).
+  #
+  # Only agents that advertise the flag get it: perch runs `<agent> --help`
+  # once at startup and, if the flag is missing (nanopi as of 2026-08-25),
+  # logs a WARN and runs without it rather than failing every email.
+  # Env override: APPEND_SYSTEM_PROMPT
+  # append_system_prompt: /root/perch/helpdesk.md
+  # append_system_prompt: |
+  #   You are the kulink support desk. Task definitions live in ./tasks/.
 
 # --- Prompt ----------------------------------------------------------------
 # When to send the format-contract sections (the "reply like a human"

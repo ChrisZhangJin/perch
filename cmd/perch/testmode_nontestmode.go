@@ -32,7 +32,8 @@ func buildApp(cfg *config.Config, p provider.Provider, ag agent.Agent, g *gate.G
 	}
 	log.Info("mailbox ready", "mode", mode, "note", note)
 	return app.New(cfg, strat.Box, g, sess,
-		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log),
+		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log).
+			WithAppendSystemPrompt(runner.NewSystemPrompt(cfg.AppendSystemPrompt, log)),
 		replier.New(cfg, p.SMTPAddr),
 		log,
 		strat.Triggers...,

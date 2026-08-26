@@ -17,6 +17,14 @@ type Args struct {
 	IsNew     bool // true => create; false => resume
 	Workdir   string
 	PermMode  string
+	// AppendSystemPrompt is extra text layered onto the agent's own system
+	// prompt (--append-system-prompt), used to give the agent a standing role
+	// — "you are the support desk, task definitions live in ./tasks" — that
+	// outlives any single email. Empty means "don't pass the flag".
+	//
+	// Always TEXT, never a path: claude takes text only, so perch resolves a
+	// configured file itself and hands every agent the same thing.
+	AppendSystemPrompt string
 }
 
 // Agent is a built-in CLI runner.

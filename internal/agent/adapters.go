@@ -1,5 +1,20 @@
 package agent
 
+// appendSystemPromptFlag is the flag name claude, pi and nanopi all use for
+// layering text onto the agent's own system prompt. Emitted only when the
+// caller supplied text AND the binary advertises the flag in its --help
+// (see SupportsAppendSystemPrompt) — an agent that has not shipped it yet
+// would otherwise die on an unknown flag on every single email.
+const appendSystemPromptFlag = "--append-system-prompt"
+
+// withAppendSystemPrompt appends the flag pair when text is non-empty.
+func withAppendSystemPrompt(args []string, text string) []string {
+	if text == "" {
+		return args
+	}
+	return append(args, appendSystemPromptFlag, text)
+}
+
 // buildClaudeArgs preserves today's behaviour exactly: --session-id on first
 // run, --resume on subsequent runs. PermMode is required for claude.
 func buildClaudeArgs(a Args) []string {
@@ -9,7 +24,7 @@ func buildClaudeArgs(a Args) []string {
 	} else {
 		out = append(out, "--resume", a.SessionID)
 	}
-	return out
+	return withAppendSystemPrompt(out, a.AppendSystemPrompt)
 }
 
 // buildNanopiArgs omits --session on first touch and uses --session <sid>
@@ -31,14 +46,17 @@ func buildNanopiArgs(a Args) []string {
 	case "acceptEdits", "bypassPermissions":
 		args = append(args, "--approve")
 	}
-	return args
+	return withAppendSystemPrompt(args, a.AppendSystemPrompt)
 }
 
 // buildPiArgs distinguishes new (--session-id) vs resume (--session). PermMode
 // is not part of pi's CLI; the --mode flag controls output format only.
 func buildPiArgs(a Args) []string {
+	args := []string{"-p", a.Prompt, "--mode", "text"}
 	if a.IsNew {
-		return []string{"-p", a.Prompt, "--mode", "text", "--session-id", a.SessionID}
+		args = append(args, "--session-id", a.SessionID)
+	} else {
+		args = append(args, "--session", a.SessionID)
 	}
-	return []string{"-p", a.Prompt, "--mode", "text", "--session", a.SessionID}
+	return withAppendSystemPrompt(args, a.AppendSystemPrompt)
 }

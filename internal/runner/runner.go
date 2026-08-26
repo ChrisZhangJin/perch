@@ -27,6 +27,7 @@ type Runner struct {
 	permMode    string
 	taskTimeout time.Duration
 	log         *slog.Logger
+	appendSys   *SystemPrompt // nil = no --append-system-prompt
 }
 
 // New wires a Runner around an already-resolved agent. workdir becomes cmd.Dir
@@ -51,6 +52,32 @@ func New(ag *agent.Agent, workdir, permMode string, taskTimeout time.Duration, l
 	}
 	warnIfSensitiveWorkdir(workdir, log)
 	return &Runner{ag: ag, workdir: workdir, permMode: permMode, taskTimeout: taskTimeout, log: log}
+}
+
+// WithAppendSystemPrompt attaches a standing system-prompt addition, passed to
+// every run as --append-system-prompt. Returns r so it can be chained onto
+// New. A nil sp is a no-op, which is the "not configured" case.
+//
+// The flag is only wired up if the agent binary advertises it: perch asks
+// `<binary> --help` once, here, instead of consulting a table that goes stale
+// (see agent.SupportsAppendSystemPrompt). An agent without the flag gets a
+// WARN naming what was dropped and then runs unchanged — the alternative is
+// every email dying on an unknown flag, which turns a config nicety into an
+// outage.
+func (r *Runner) WithAppendSystemPrompt(sp *SystemPrompt) *Runner {
+	if sp == nil {
+		return r
+	}
+	if !agent.SupportsAppendSystemPrompt(r.ag.Binary) {
+		r.log.Warn("agent does not support --append-system-prompt; ignoring append_system_prompt",
+			"agent", r.ag.Name, "binary", r.ag.Binary, "source", sp.Describe(),
+			"hint", "upgrade the agent, or switch ai_agent.name to one that has the flag")
+		return r
+	}
+	r.appendSys = sp
+	r.log.Info("append_system_prompt enabled",
+		"agent", r.ag.Name, "source", sp.Describe(), "bytes", sp.Bytes())
+	return r
 }
 
 // sensitiveWorkdirs are top-level paths where "always allowed inside cwd" in
@@ -392,12 +419,19 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 // runOnce performs a single spawn→exit→discover cycle. Split out so Run
 // can retry on a lost-session error without duplicating the spawn wiring.
 func (r *Runner) runOnce(ctx context.Context, prompt, sessionID string, isNew bool) (string, string, error) {
+	// Re-read per run: an operator editing the role definition should see it
+	// take effect on the next email, not the next restart. Held in a local so
+	// the size logged below is the payload this argv actually carries, not a
+	// second read of a file that may have changed in between.
+	appendSys := r.appendSys.Text()
+
 	args := r.ag.BuildArgs(agent.Args{
-		Prompt:    prompt,
-		SessionID: sessionID,
-		IsNew:     isNew,
-		Workdir:   r.workdir,
-		PermMode:  r.permMode,
+		Prompt:             prompt,
+		SessionID:          sessionID,
+		IsNew:              isNew,
+		Workdir:            r.workdir,
+		PermMode:           r.permMode,
+		AppendSystemPrompt: appendSys,
 	})
 
 	ctx, cancel := context.WithTimeout(ctx, r.taskTimeout)
@@ -418,6 +452,10 @@ func (r *Runner) runOnce(ctx context.Context, prompt, sessionID string, isNew bo
 		"workdir", r.workdir,
 		"is_new", isNew,
 		"prompt_bytes", len(prompt),
+		// The text itself is already in argv above; this is the greppable
+		// per-email confirmation that the standing role was carried, and 0 is
+		// the signal that something dropped it (unsupported flag, empty file).
+		"system_prompt_bytes", len(appendSys),
 	)
 
 	var stdout, stderr bytes.Buffer

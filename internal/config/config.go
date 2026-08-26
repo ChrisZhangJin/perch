@@ -189,7 +189,8 @@ type yamlConfig struct {
 		// TaskOnly is a pointer so we can tell "unset" (leave the default)
 		// apart from "explicit false" (disable). The default is true, so a
 		// non-pointer would swallow the user's `task_only: false`.
-		TaskOnly *bool `yaml:"task_only"`
+		TaskOnly           *bool  `yaml:"task_only"`
+		AppendSystemPrompt string `yaml:"append_system_prompt"`
 	} `yaml:"ai_agent"`
 	Prompt struct {
 		Contracts   string `yaml:"contracts"`
@@ -379,6 +380,12 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.AIAgent.TaskOnly != nil {
 		c.AgentTaskOnly = *y.AIAgent.TaskOnly
+	}
+	// Not TrimSpace'd: a leading newline is normal for a YAML block scalar,
+	// and trailing whitespace in a role definition is harmless. Only an
+	// all-whitespace value counts as unset.
+	if strings.TrimSpace(y.AIAgent.AppendSystemPrompt) != "" {
+		c.AppendSystemPrompt = y.AIAgent.AppendSystemPrompt
 	}
 	if v := y.Prompt.Contracts; v != "" {
 		switch v {

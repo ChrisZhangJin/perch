@@ -39,7 +39,8 @@ func buildApp(cfg *config.Config, _ provider.Provider, ag agent.Agent, g *gate.G
 	trig := mailbox.TimerTrigger{Interval: cfg.PollInterval}
 	log.Info("testmode: IMAP and SMTP both bypassed; replies are captured, never sent")
 	return app.New(cfg, qm, g, sess,
-		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log),
+		runner.New(&ag, cfg.AgentWorkdir, cfg.AgentPermMode, cfg.TaskTimeout, log).
+			WithAppendSystemPrompt(runner.NewSystemPrompt(cfg.AppendSystemPrompt, log)),
 		is,
 		log,
 		trig,

@@ -301,7 +301,16 @@ func persist(cfg *config.Config) error {
 		"  # external hosts, package install) are refused UNLESS destruction IS\n" +
 		"  # the stated task. A light guardrail against side-requests smuggled\n" +
 		"  # into an email body. Set false to disable.\n" +
-		"  task_only: " + strconv.FormatBool(cfg.AgentTaskOnly) + "\n\n" +
+		"  task_only: " + strconv.FormatBool(cfg.AgentTaskOnly) + "\n" +
+		"  # append_system_prompt: text layered onto the AGENT'S OWN system\n" +
+		"  # prompt every run (--append-system-prompt) — a standing role that\n" +
+		"  # outlives one email, e.g. \"you are the support desk, task\n" +
+		"  # definitions live in ./tasks\". Text-or-path: a single-line value\n" +
+		"  # naming a readable file is read as a file (re-read per email, so\n" +
+		"  # edits need no restart); anything else is literal. Ignored with a\n" +
+		"  # WARN for agents whose --help lacks the flag. Empty = off.\n" +
+		"  # Env override: APPEND_SYSTEM_PROMPT\n" +
+		formatAppendSystemPrompt(cfg.AppendSystemPrompt) + "\n" +
 		"# --- Prompt ---\n" +
 		"# contracts: when to send the format-contract sections (reply framing,\n" +
 		"# GREETING PROTOCOL, ATTACHMENT PROTOCOL) — roughly 1.8 KB per email.\n" +
