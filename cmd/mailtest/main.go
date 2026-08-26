@@ -2,9 +2,10 @@
 // internal/mailtest harness, so you can send a specific email and observe
 // the agent's reply without IMAP/SMTP.
 //
-// Configuration lives in a YAML file (default ./mailtest.yaml). Example:
+// Configuration lives in a YAML file (default ./mailtest.yaml; copy
+// mailtest.yaml.example to get one). Example:
 //
-//	from: chris@example.com
+//	from: sender@example.com
 //	to: agent@perch.local
 //	subject: "quick question"
 //	body: |

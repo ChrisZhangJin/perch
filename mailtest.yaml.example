@@ -1,0 +1,32 @@
+# mailtest.yaml.example — test config for cmd/mailtest.
+#
+# Copy it, then run:
+#   cp mailtest.yaml.example mailtest.yaml     # your copy is gitignored
+#   ./bin/mailtest                             # defaults to ./mailtest.yaml
+#   ./bin/mailtest -config mailtest.yaml -agent nanopi   # overrides `agent:`
+#   echo "your task" | ./bin/mailtest -body-stdin        # overrides `body:`
+#
+# mailtest drives the real agent through the offline harness: no IMAP, no
+# SMTP, one email per process. Two runs against the same `workdir` form a
+# thread, because the synthetic Message-ID is identical every run and the
+# session map persists at <workdir>/mailtest-sessions.json — that is how you
+# exercise the cold-vs-resumed prompt paths. See docs/TESTING.md.
+
+from: sender@example.com
+to: agent@perch.local
+subject: "quick question"
+body: |
+  What is the current date? Reply in one sentence.
+
+# which agent binary to drive; must be on PATH
+agent: claude          # claude | nanopi | pi
+
+# optional — override any of these:
+# body_file: /path/to/task.txt
+# workdir: .           # point this at a scratch dir, NOT the perch repo:
+                       # the agent may write anywhere inside it
+# permission_mode: acceptEdits
+# allow_from: ["*"]
+# task_timeout: 120s
+# log_level: info      # debug | info | warn | error
+                       # debug is what shows the prompt and the argv

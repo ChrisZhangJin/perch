@@ -40,7 +40,7 @@ import (
 //	PERCH_BODY     email body
 func TestIntegrationEmailRoundTrip(t *testing.T) {
 	fs := flag.NewFlagSet("integration", flag.ContinueOnError)
-	from := fs.String("from", "chris@example.com", "sender address")
+	from := fs.String("from", "sender@example.com", "sender address")
 	subject := fs.String("subject", "quick question", "email subject")
 	body := fs.String("body", "What is the current date? Reply in one sentence.", "email body")
 	fromStdin := fs.Bool("from-stdin", false, "read body from stdin instead of -body")

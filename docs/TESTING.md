@@ -115,11 +115,15 @@ log_level: debug
 
 ### mailtest — one email per process
 
+A ready-made config ships as `mailtest.yaml.example` (`cp mailtest.yaml.example
+mailtest.yaml`; your copy is gitignored). The inline version below is the same
+thing pointed at a scratch workdir:
+
 ```bash
 make build-mailtest
 mkdir -p /tmp/mtwd
 cat > /tmp/mt.yaml <<'EOF'
-from: chris@example.com
+from: sender@example.com
 subject: "quick question"
 body: |
   What is the current date? Reply in one sentence.
@@ -329,7 +333,7 @@ Each of these produced a wrong conclusion at least once.
   the blast radius.
 - **`grep -c -- "--resume"` reports a nonsense count** — the `--` was consumed as the
   pattern and you counted every line containing `--`. Escape instead: `grep -c '\-\-resume'`.
-- **Sign-off reads `Best,\nthere`** — `mailtest.yaml` has no `email:` field, so
+- **Sign-off reads `Best,\nthere`** — mailtest's config has no `email:` field, so
   `agentDisplayName("")` falls back to `there`. Cosmetic; production derives the name from
   `email:` (`agent_hellen@163.com` → `hellen`).
 - **Thread continuity vanished after a reboot** — `session_store` defaults to
