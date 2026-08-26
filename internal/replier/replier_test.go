@@ -394,3 +394,56 @@ func TestComposeStampsAutoSubmitted(t *testing.T) {
 		t.Errorf("ComposeFailure is missing the header:\n%s", fail)
 	}
 }
+
+// TestReplySubjectPrefixes pins which subjects already count as replies. The
+// ASCII-only check this replaced could not see 回复：/答复：, so a Chinese
+// client's thread grew one prefix pair per round:
+// "回复：x" → "Re: 回复：x" → "回复：Re: 回复：x" → …
+func TestReplySubjectPrefixes(t *testing.T) {
+	unchanged := []string{
+		"Re: Already",
+		"RE: shouty",
+		"re: lower",
+		"Re:no space",
+		"Re : spaced colon",
+		"Re[2]: counted",
+		"Re[10]:counted",
+		"Re：full width colon",
+		"回复：检查状态！", // the one from the 2026-08-26 log
+		"回复: half width colon",
+		"回覆：traditional",
+		"答复：another form",
+		"答覆: and its traditional",
+		"  Re: leading space",
+	}
+	for _, s := range unchanged {
+		if got := replySubject(s); got != s {
+			t.Errorf("replySubject(%q) = %q, want it unchanged", s, got)
+		}
+	}
+
+	prefixed := map[string]string{
+		"检查状态":             "Re: 检查状态",
+		"Do X":             "Re: Do X",
+		"":                 "Re: ",
+		"Reminder: pay up": "Re: Reminder: pay up", // "Reminder" is not "Re"
+		"研究一下 Re: 这个":      "Re: 研究一下 Re: 这个",      // marker must be at the start
+	}
+	for in, want := range prefixed {
+		if got := replySubject(in); got != want {
+			t.Errorf("replySubject(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestComposeDoesNotStackChinesePrefix is the end-to-end form: the composed
+// header must carry exactly one reply marker.
+func TestComposeDoesNotStackChinesePrefix(t *testing.T) {
+	msg := string(Compose("a@x", "b@x", "回复：检查状态！", "<i@x>", nil, "body"))
+	if !strings.Contains(msg, "Subject: 回复：检查状态！") {
+		t.Errorf("expected the subject passed through untouched, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "Subject: Re: 回复：") {
+		t.Errorf("perch stacked a second reply prefix:\n%s", msg)
+	}
+}

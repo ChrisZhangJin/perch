@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -30,11 +31,33 @@ func Compose(fromAddr, to, subject, inReplyTo string, references []string, body 
 	return []byte(composeHeaders(fromAddr, to, subject, inReplyTo, references, "text/plain; charset=utf-8") + body)
 }
 
-func composeHeaders(fromAddr, to, subject, inReplyTo string, references []string, contentType string) string {
-	subject = sanitizeHeader(subject)
-	if !strings.HasPrefix(strings.ToLower(subject), "re:") {
-		subject = "Re: " + subject
+// replyPrefixRe matches the "this is a reply" marker a mail client prepends to
+// a subject, in the forms perch actually meets on 163 / 126 / QQ / Foxmail /
+// Lark as well as ASCII clients:
+//
+//	Re: x    RE：x    Re[2]: x    回复：x    回覆: x    答复：x    答覆: x
+//
+// Both the ASCII colon and the full-width one (：) count, and so does the
+// bracketed counter some clients add.
+//
+// This used to be a plain strings.HasPrefix(lower(subject), "re:"), which does
+// not see the CJK forms — so a thread that a Chinese client started as
+// "回复：检查状态！" came back as "Re: 回复：检查状态！", the sender's client made
+// that "回复：Re: 回复：…", and the ladder grew one pair per round. Observed
+// 2026-08-26.
+var replyPrefixRe = regexp.MustCompile(`^\s*(?i:re)\s*(?:\[\d+\])?\s*[:：]|^\s*(?:回复|回覆|答复|答覆)\s*[:：]`)
+
+// replySubject returns subject with a single "Re: " prefix, adding one only
+// when the subject does not already carry a reply marker.
+func replySubject(subject string) string {
+	if replyPrefixRe.MatchString(subject) {
+		return subject
 	}
+	return "Re: " + subject
+}
+
+func composeHeaders(fromAddr, to, subject, inReplyTo string, references []string, contentType string) string {
+	subject = replySubject(sanitizeHeader(subject))
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", sanitizeHeader(fromAddr))
 	fmt.Fprintf(&b, "To: %s\r\n", sanitizeHeader(to))
@@ -62,10 +85,7 @@ func composeHeaders(fromAddr, to, subject, inReplyTo string, references []string
 // the agent staged files in the reply/ directory.
 func ComposeWithAttachments(fromAddr, to, subject, inReplyTo string, references []string, body string, attachments []string) ([]byte, error) {
 	// Same header normalization as the plain path: sanitize + Re: prefix.
-	subject = sanitizeHeader(subject)
-	if !strings.HasPrefix(strings.ToLower(subject), "re:") {
-		subject = "Re: " + subject
-	}
+	subject = replySubject(sanitizeHeader(subject))
 
 	var buf strings.Builder
 	mw := multipart.NewWriter(&buf)
