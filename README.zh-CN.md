@@ -35,6 +35,8 @@ agent(默认 Claude Code,任何 CLI 都行)处理,并在同一邮件线程内回
 - 🧵 **对话记忆** — 同一线程内的回复会续用同一个 agent 会话(`--resume`)。
 - 📡 **自动推送或轮询** — 服务器支持时用 IMAP `IDLE` 近实时;不支持时(如 163)自动降级为轮询。
 - 🤖 **与 agent 无关** — 默认 `claude`,但任何 `-p "<prompt>"` 的 CLI 都能用。
+- 🎩 **常驻角色** — `append_system_prompt` 把一个持久角色(客服台、分诊员)追加到 agent 自身的 system prompt 上,支持从文件读、每封邮件重新读。见 [常驻角色](#-常驻角色append_system_prompt)。
+- 🪝 **收信脚本钩子** — 每封被接受的邮件都可以先调一次你自己的脚本(`<email_id> <subject> <body> <sender> <new_thread|reply_thread>`):记录新线程、推手机通知、打点计数。见 [脚本钩子](#-脚本钩子)。
 - ⚙️ **分层配置** — YAML 文件、环境变量、内置默认。优先级:env > yaml > default。密钥只能从 env 来。
 - 🪶 **小而静态** — 一个小 Go 二进制,`CGO_ENABLED=0`,无运行时依赖。如果系统里有 [UPX](https://upx.github.io/),`make build` 会自动压缩到 ~2.8 MB(linux/amd64)。
 
@@ -57,6 +59,13 @@ L 模式: for { IDLE 最长到 POLL_INTERVAL(有 EXISTS 立刻返回); fetch; } 
 
 每封邮件:`解析 → 去重(\Seen + 内存集合) → 白名单 → 把邮件线程映射到稳定的 agent 会话
 → 运行 agent -p … → 原线程 SMTP 回信 → 标记 \Seen`。
+
+**agent 跑不起来的时候**(二进制不存在、崩溃、超时、额度用完),发件人收到的是一封简短的
+"我现在不在工位上,请稍后再发一次"的通知,而**不是** Go 的错误信息。错误本身以 ERROR 级别
+留在日志里给运维看:`exec: "nanopi": executable file not found in $PATH` 对写信的人毫无
+意义,而且会泄露二进制名、路径和 stderr。连续两次跑出空回复也是同样处理:用人话请对方换个
+说法再发一次。这两种通知都是 perch 自己写的(没有 agent 参与),所以语言由来信决定——
+中文来、中文回。
 
 **重要:** 同一邮件线程里的回复共享同一个 agent 会话,perch 按 `Message-ID` 去重。如果
 你发了一封邮件,然后几秒后又在原邮件上 reply,这两封会在同一次 IMAP fetch 里到达——
@@ -99,12 +108,150 @@ perch 从三层加载配置,优先级由高到低:
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — 自动推导二进制 |
 | `ai_agent.workdir`          | —                 | `.`              | 拉起的 agent 工作目录 |
 | `ai_agent.permission_mode`  | —                 | `acceptEdits`    | 仅 claude；nanopi/pi 忽略 |
+| `ai_agent.append_system_prompt` / `APPEND_SYSTEM_PROMPT` | — | — | 追加到 **agent 自身 system prompt** 的常驻角色设定。可以是文本,也可以是文件路径。见 [常驻角色](#-常驻角色append_system_prompt) |
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | 轮询间隔 / IDLE 保活 |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | 超时后 SIGTERM→5s→SIGKILL |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | 截断超大邮件正文 |
 | `max_attachment_bytes` / `MAX_ATTACHMENT_BYTES` | | `52428800` (50 MB) | 单个附件大小上限;超限附件被丢弃(解析仍继续) |
 | `session_store` / `SESSION_STORE` | | 临时文件 | 线程→会话 UUID 映射(JSON) |
+| `hooks.on_email` / `ON_EMAIL_HOOK` | | — | 每封被接受的邮件在跑 agent 之前调用的脚本。见 [脚本钩子](#-脚本钩子) |
+| `hooks.timeout` / `HOOK_TIMEOUT` | | `30s` | 单次钩子运行上限(SIGTERM→5s→SIGKILL) |
 | `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **仅开发/测试** — 接受自签名证书 |
+
+## 🎩 常驻角色(`append_system_prompt`)
+
+perch 每封邮件构造的 prompt 讲的是**这一封**邮件。`append_system_prompt` 是另一个维度:
+每次运行都追加到 **agent 自身的 system prompt** 上,用来定义一个跨邮件存在的角色——
+客服台、构建看护、on-call 分诊。
+
+```yaml
+# perch.yaml
+ai_agent:
+  name: claude
+  workdir: /root/perch
+  append_system_prompt: /root/perch/helpdesk.md   # 一个路径……
+  # append_system_prompt: |                       # ……或者直接写文本
+  #   You are the kulink support desk.
+  #   Task definitions live in ./tasks/.
+```
+
+取值是**文本或路径**(和 pi 那个 flag 本身的规则一致):单行且指向一个可读文件时按文件读,
+其他情况按字面文本用。文件会**每封邮件重新读一次**,所以改角色定义不用重启,下一封邮件
+就生效。启动日志会说清楚它按哪种方式解析,路径打错时一眼能看出来:
+
+```
+INFO "append_system_prompt enabled" agent=claude source="file /root/perch/helpdesk.md" bytes=1683
+```
+
+**agent 不支持这个 flag 时是被检测出来,而不是直接炸。** perch 启动时跑一次
+`<agent> --help`,找 `--append-system-prompt`。claude 和 pi 有;nanopi 正在加。
+找不到就打一条 WARN 说明丢掉了什么,然后照常运行——而不是让每封邮件都死在未知 flag 上;
+等 agent 哪天支持了,perch 会自动开始用,不需要升级 perch 也不用改配置。
+
+### 客服台模板
+
+[`helpdesk.md.example`](helpdesk.md.example) 是一份填空式的客服台角色定义:从工作目录下的
+`tasks/` 读任务定义、信息不全时主动追问而不是猜、不自己编造政策和价格、该转人工就转人工、
+不把内部信息写进回复。[`tasks.example/complaint-intake.md`](tasks.example/complaint-intake.md)
+是单个任务文件的样例。
+
+```bash
+cp helpdesk.md.example helpdesk.md          # 然后把每个 [[PLACEHOLDER]] 换掉
+grep -n '\[\[' helpdesk.md                  # 应该什么都不输出
+cp -r tasks.example /root/perch/tasks       # <workdir>/tasks
+```
+
+```yaml
+ai_agent:
+  workdir: /root/perch
+  append_system_prompt: /root/perch/helpdesk.md
+```
+
+这个文件是**原样**发给 agent 的。两个由此而来的注意点:
+
+- **一定要填完。** 如果加载到的 prompt 里还有 `[[PLACEHOLDER]]` 或者样例顶部那段 setup
+  注释,perch 启动时会打 WARN——没改过的模板等于在告诉 agent "转给 `[[ESCALATION CONTACT]]`"。
+  改完文件,下一封邮件就不再报警,不用重启。
+- **别放在 agent 的 workdir 里面。** 在 `workdir` 内部,SAFETY PROTOCOL 把这个文件当成可以
+  随便写的,agent 能改自己的角色定义。放 `~/.perch/helpdesk.md` 或 `/etc/perch/helpdesk.md`
+  仍然读得到(任何位置的只读访问都是允许的),但改不了。
+
+另外保留角色定义里让 agent 依赖的那五个任务文件小标题。
+
+角色设定要短,而且**不要**在里面重复 per-email 的那些契约(回复格式、语言、安全、
+grounding)——perch 已经在发了,角色设定跟它们冲突的时候,模型只能挑一边站。
+
+## 🪝 脚本钩子
+
+`hooks.on_email` 指向一个脚本,perch 在**每封被接受的邮件**上、跑 agent 之前调用它一次。
+这是给 perch 本身不做的副作用留的接缝:记录每个新线程、推一条通知、打个点。
+
+```yaml
+# perch.yaml
+hooks:
+  on_email: /home/agent/record.sh
+  timeout: 30s
+```
+
+脚本收到五个位置参数:
+
+| 参数 | 含义 |
+|---|---|
+| `$1` | `email_id` — 邮件的 `Message-Id` 头(如 `<abc@163.com>`),由发件方邮件服务商生成。邮件没有这个头时是**空字符串**——参数照样传,所以 `$2`…`$5` 的位置永远不会前移。 |
+| `$2` | `subject` 主题 |
+| `$3` | `body` — `text/plain` 正文,原样(未剥引用历史),超过 64 KiB 截断 |
+| `$4` | `sender` — 小写发件人地址,如 `alice@163.com` |
+| `$5` | `new_thread`(perch 此前没有该线程的会话,即新线程)或 `reply_thread` |
+
+```bash
+#!/usr/bin/env bash
+# record.sh — 每个新线程记一行
+[ "$5" = new_thread ] || exit 0
+printf '%s\t%s\t%s\n' "$(date -Is)" "$4" "$2" >> "$HOME/perch-threads.tsv"
+```
+
+```bash
+chmod +x /home/agent/record.sh
+```
+
+约定:
+
+- **只是观察者,不是闸门。** 脚本不存在、退出码非 0、或者跑超过 `hooks.timeout`,
+  都只记一条 WARN 日志,邮件照常处理。钩子无法阻止 perch 回信。
+- **只看得到可信发件人。** 钩子在 `allow_from` 与防回环检查**之后**触发,
+  被 perch 丢掉的邮件不会跑到你的脚本里。
+- 同步执行,`cwd` = `ai_agent.workdir`,继承 perch 的环境变量。请让它跑得快——
+  排在后面的邮件在等它。
+
+### 示例:把每封邮件写进飞书多维表格(Bitable)
+
+[`scripts/hooks/lark_bitable.py`](scripts/hooks/lark_bitable.py) 会给每封邮件在
+Bitable 里追加一行(`SendTime` / `Subject` / `Content` / `TicketNo` / `sender`)。
+只用 Python 3 标准库,perch 所在机器不需要装任何依赖。
+
+```bash
+# 飞书自建应用的凭证(不会进版本库,.gitignore 已忽略 .env)
+cat > .env <<'EOF'
+APP_ID=cli_xxxxxxxx
+APP_SECRET=xxxxxxxx
+EOF
+```
+
+```yaml
+# perch.yaml — 两个 id 都能从 Bitable 的 URL 里读出来:
+#   https://<host>/base/<APP_TOKEN>?table=<TABLE_ID>&view=...
+hooks:
+  on_email: /path/to/perch/scripts/hooks/lark_bitable.py
+```
+
+换自己的表就设 `LARK_APP_TOKEN` / `LARK_TABLE_ID`;`LARK_ONLY_NEW_THREADS=1`
+表示只记录每个线程的第一封。其余开关(`LARK_BASE_URL` 用于 Lark 国际版、
+`LARK_MAX_CONTENT`、`LARK_TIMEOUT`、`LARK_USE_ENV_PROXY` 等)见脚本开头的
+docstring。不需要真邮件也能测——按 perch 的调用方式直接跑:
+
+```bash
+./scripts/hooks/lark_bitable.py "<t1@163.com>" "test subject" "body text" alice@163.com new_thread
+```
 
 ## 🚀 运行
 

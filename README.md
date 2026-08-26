@@ -37,6 +37,8 @@ gate** that listens, authorizes, spawns the agent as a worker, and mails the res
 - 🧵 **Conversation memory** — replies in a thread resume the same agent session (`--resume`).
 - 📡 **Push or poll, automatic** — uses IMAP `IDLE` for near-real-time when available, falls back to polling (e.g. on 163).
 - 🤖 **Agent-agnostic** — defaults to `claude`, but any `-p "<prompt>"` CLI works.
+- 🎩 **Standing role** — `append_system_prompt` layers a persistent role (support desk, triager) onto the agent's own system prompt, from a file that's re-read every email. See [Standing role](#-standing-role-append_system_prompt).
+- 🪝 **On-email script hook** — run your own script for every accepted email (`<email_id> <subject> <body> <sender> <new_thread|reply_thread>`); log threads, ping a phone, bump a counter. See [Script hook](#-script-hook).
 - ⚙️ **Layered config** — YAML file, env vars, built-in defaults. Precedence: env > yaml > default. Secrets only from env.
 - 🪶 **Tiny & static** — one small Go binary, `CGO_ENABLED=0`, no runtime deps. Auto-compressed with [UPX](https://upx.github.io/) when available (~2.8 MB on linux/amd64).
 
@@ -59,6 +61,15 @@ L mode:  for { IDLE up to POLL_INTERVAL (early-exit on EXISTS); fetch; }   // sh
 
 Per message: `parse → dedup (\Seen + in-memory set) → whitelist → map thread to a stable
 agent session → run agent -p … → threaded SMTP reply → mark \Seen`.
+
+**When the agent can't run** (binary missing, crash, timeout, quota exhausted), the
+sender gets a short out-of-office notice asking them to send again later — never the
+Go error. The error itself goes to the log at ERROR, where the operator needs it:
+`exec: "nanopi": executable file not found in $PATH` is meaningless to the person who
+emailed in, and it leaks binary names, paths and stderr. Same for a run that produces
+nothing usable twice: the sender is asked to rephrase, in plain language. Both notices
+are written by perch (no agent in the loop), so perch picks the language from the
+inbound email — Chinese in, Chinese out.
 
 **Important:** replies in the same email thread share one agent session, and perch
 dedups by `Message-ID`. If you send an email and then reply to it a few seconds later,
@@ -105,12 +116,162 @@ from the YAML file.
 | `ai_agent.name`             | —                 | `claude`         | `claude` / `nanopi` / `pi` — binary derived |
 | `ai_agent.workdir`          | —                 | `.`              | cwd for the spawned agent |
 | `ai_agent.permission_mode`  | —                 | `acceptEdits`    | claude only; ignored by nanopi/pi |
+| `ai_agent.append_system_prompt` / `APPEND_SYSTEM_PROMPT` | — | — | standing role appended to the agent's own system prompt. Text or file path. See [Standing role](#-standing-role-append_system_prompt) |
 | `poll_interval` / `POLL_INTERVAL` | | `60s` | poll interval / IDLE keepalive |
 | `task_timeout` / `TASK_TIMEOUT` | | `30m` | SIGTERM→5s→SIGKILL after this |
 | `max_prompt_bytes` / `MAX_PROMPT_BYTES` | | `65536` | truncate huge email bodies |
 | `max_attachment_bytes` / `MAX_ATTACHMENT_BYTES` | | `52428800` (50 MB) | per-attachment size cap; oversized attachments are dropped (parse survives) |
 | `session_store` / `SESSION_STORE` | | tmp file | thread→session UUID map (JSON) |
+| `hooks.on_email` / `ON_EMAIL_HOOK` | | — | script run for every accepted email, before the agent. See [Script hook](#-script-hook) |
+| `hooks.timeout` / `HOOK_TIMEOUT` | | `30s` | per-run bound on the hook (SIGTERM→5s→SIGKILL) |
 | `tls_insecure_skip_verify` / `TLS_INSECURE_SKIP_VERIFY` | | `false` | **dev/test only** — accept self-signed certs |
+
+## 🎩 Standing role (`append_system_prompt`)
+
+The prompt perch builds per email is about *this* message. `append_system_prompt`
+is the other axis: text layered onto the **agent's own system prompt** on every
+run, for a role that outlives any single email — a support desk, a build
+babysitter, an on-call triager.
+
+```yaml
+# perch.yaml
+ai_agent:
+  name: claude
+  workdir: /root/perch
+  append_system_prompt: /root/perch/helpdesk.md   # a path...
+  # append_system_prompt: |                       # ...or inline text
+  #   You are the kulink support desk.
+  #   Task definitions live in ./tasks/.
+```
+
+The value is **text-or-path** (the same rule pi's own flag follows): a
+single-line value naming a readable file is read as a file, anything else is
+used literally. A file is **re-read on every email**, so editing the role takes
+effect on the next message with no restart. perch logs which reading won at
+startup, so a path typo is visible:
+
+```
+INFO "append_system_prompt enabled" agent=claude source="file /root/perch/helpdesk.md" bytes=1683
+```
+
+**Agents that don't have the flag are detected, not broken.** perch runs
+`<agent> --help` once at startup and looks for `--append-system-prompt`. claude
+and pi have it; nanopi is adding it. If it's missing, perch logs a WARN naming
+what it dropped and runs without it, rather than killing every email on an
+unknown flag — and starts using it automatically once the agent ships it, with
+no perch upgrade or config change.
+
+### Help-desk template
+
+[`helpdesk.md.example`](helpdesk.md.example) is a fill-in-the-blanks support-desk
+role: read task definitions from `tasks/`, ask for missing information instead of
+guessing, invent no policy or prices, escalate rather than promise, and keep
+internals out of replies. [`tasks.example/complaint-intake.md`](tasks.example/complaint-intake.md)
+shows the shape of one task file.
+
+```bash
+cp helpdesk.md.example helpdesk.md          # then replace every [[PLACEHOLDER]]
+grep -n '\[\[' helpdesk.md                  # should print nothing
+cp -r tasks.example /root/perch/tasks       # <workdir>/tasks
+```
+
+```yaml
+ai_agent:
+  workdir: /root/perch
+  append_system_prompt: /root/perch/helpdesk.md
+```
+
+The file is sent to the agent **verbatim**. Two consequences worth internalising:
+
+- **Fill it in.** perch WARNs at startup if the loaded prompt still contains
+  `[[PLACEHOLDER]]` slots or the example's setup comment, because an unedited
+  template tells the agent to escalate to a literal `[[ESCALATION CONTACT]]`.
+  Fix the file and the next email clears the warning — no restart.
+- **Keep it outside the agent's workdir.** Inside `workdir`, the SAFETY
+  PROTOCOL treats the file as freely writable, so the agent can rewrite its own
+  role definition. `~/.perch/helpdesk.md` or `/etc/perch/helpdesk.md` stays
+  readable (read-only access anywhere is always allowed) without being editable.
+
+Keep the five task-file headings the role definition tells the agent to rely on.
+
+Keep the role short, and don't restate the per-email contracts in it (reply
+format, language, safety, grounding) — perch already sends those, and a role
+that contradicts them is a fight the model has to pick a side in.
+
+## 🪝 Script hook
+
+`hooks.on_email` points at a script perch runs for **every inbound email it
+accepts**, just before the agent runs. It's the seam for side effects perch
+itself doesn't do — record every new thread, notify a phone, feed a metric.
+
+```yaml
+# perch.yaml
+hooks:
+  on_email: /home/agent/record.sh
+  timeout: 30s
+```
+
+The script is called with five positional arguments:
+
+| Arg | Value |
+|---|---|
+| `$1` | `email_id` — the `Message-Id` header (e.g. `<abc@163.com>`), assigned by the sender's mail provider. **Empty string** when the email carries none — the argument is still passed, so `$2`…`$5` never shift. |
+| `$2` | `subject` |
+| `$3` | `body` — `text/plain`, as received (before quote-stripping), truncated at 64 KiB |
+| `$4` | `sender` — lowercased address, e.g. `alice@163.com` |
+| `$5` | `new_thread` if this email opened a thread perch had no session for, else `reply_thread` |
+
+```bash
+#!/usr/bin/env bash
+# record.sh — append one line per new thread
+[ "$5" = new_thread ] || exit 0
+printf '%s\t%s\t%s\n' "$(date -Is)" "$4" "$2" >> "$HOME/perch-threads.tsv"
+```
+
+```bash
+chmod +x /home/agent/record.sh
+```
+
+Contract:
+
+- **Observer, never a gate.** A missing script, a non-zero exit, or a run that
+  outlives `hooks.timeout` is logged at WARN and the email is handled exactly
+  as it would have been anyway. The hook cannot stop perch from replying.
+- **Trusted senders only.** It fires *after* `allow_from` and the loop guards,
+  so mail perch drops never reaches your script.
+- Runs synchronously with `cwd` = `ai_agent.workdir`, inheriting perch's
+  environment. Keep it quick — the email behind it waits.
+
+### Example: log every email to a Lark (Feishu) Bitable
+
+[`scripts/hooks/lark_bitable.py`](scripts/hooks/lark_bitable.py) appends one
+row per email (`SendTime` / `Subject` / `Content` / `TicketNo` / `sender`) to a
+Bitable table. Python 3 stdlib only — nothing to install on the perch host.
+
+```bash
+# credentials for your Lark custom app (never committed; .gitignore covers .env)
+cat > .env <<'EOF'
+APP_ID=cli_xxxxxxxx
+APP_SECRET=xxxxxxxx
+EOF
+```
+
+```yaml
+# perch.yaml — both ids come from the Bitable URL:
+#   https://<host>/base/<APP_TOKEN>?table=<TABLE_ID>&view=...
+hooks:
+  on_email: /path/to/perch/scripts/hooks/lark_bitable.py
+```
+
+Set `LARK_APP_TOKEN` / `LARK_TABLE_ID` for your own table, and
+`LARK_ONLY_NEW_THREADS=1` to record only the first email of each thread. The
+script's docstring lists the rest (`LARK_BASE_URL` for a Lark-global tenant,
+`LARK_MAX_CONTENT`, `LARK_TIMEOUT`, `LARK_USE_ENV_PROXY`, …). Test it without
+any email traffic by calling it the way perch does:
+
+```bash
+./scripts/hooks/lark_bitable.py "<t1@163.com>" "test subject" "body text" alice@163.com new_thread
+```
 
 ## 🚀 Run
 
