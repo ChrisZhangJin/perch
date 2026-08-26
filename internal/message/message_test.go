@@ -64,7 +64,7 @@ func TestParseGBKBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse GBK: %v", err)
 	}
-	if m.From != "zhangjin0602@126.com" {
+	if m.From != "sender@126.com" {
 		t.Errorf("From = %q", m.From)
 	}
 	if !strings.Contains(m.Body, "你好") || !strings.Contains(m.Body, "GBK 编码") {

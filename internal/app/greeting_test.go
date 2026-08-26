@@ -142,7 +142,7 @@ func TestExtractBodyAfterGreeting_DropsAuditPreamble(t *testing.T) {
 		"Both files have content after frontmatter (no `#` / `##` heading, but they have substantive prose — this is a format issue per the checklist's weak check for first-line `#`/`##`).\n" +
 		"Let me report this honestly per the schema.\n" +
 		"== Memory Audit Report ==\n" +
-		"Root: /home/zhangjin/perch\n" +
+		"Root: /home/agent/perch\n" +
 		"Total entries: 2\n" +
 		"Valid: 2\n\n" +
 		"Hi Chris Zhang Jin,\n\n" +

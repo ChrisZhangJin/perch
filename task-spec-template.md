@@ -50,7 +50,7 @@
 只列**绝对路径 + 校验命令**，agent 直接复制粘贴执行：
 
 ```bash
-workdir: /home/zhangjin/...
+workdir: /home/agent/...
 binary/script: /abs/path/to/thing    # test -x <path>
 config (if any): /abs/path/to/yaml   # test -s <path>
 artifacts:
@@ -121,7 +121,7 @@ status: PASS|FAIL
 - 边界：只审计 `memory/MEMORY.md` 引用的链接，不动索引本身
 
 ## 2. Environment
-workdir: /home/zhangjin/perch
+workdir: /home/agent/perch
 memory index: memory/MEMORY.md
 memory refs (执行前必读):
   - memory/MEMORY.md
