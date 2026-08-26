@@ -191,11 +191,11 @@ func TestExtractBodyAfterGreeting_EmptyStdout(t *testing.T) {
 // phrase.
 func TestExtractBodyAfterGreeting_RejectsProseHi(t *testing.T) {
 	cases := []string{
-		"Hi there is a regression in prod.\nNext line.\n",     // no comma after "Hi there"
-		"First I'll greet: Hi Chris. Then continue.\n",         // no comma after "Chris"
-		"Hello world, this is not a greeting.\n",               // comma in middle of sentence
-		"Greetings Chris,\n",                                   // "Greetings" not in canonical list
-		"Hi,\n",                                                 // empty name
+		"Hi there is a regression in prod.\nNext line.\n", // no comma after "Hi there"
+		"First I'll greet: Hi Chris. Then continue.\n",    // no comma after "Chris"
+		"Hello world, this is not a greeting.\n",          // comma in middle of sentence
+		"Greetings Chris,\n",                              // "Greetings" not in canonical list
+		"Hi,\n",                                           // empty name
 	}
 	for _, in := range cases {
 		_, err := ExtractBodyAfterGreeting(in, "Chris")
