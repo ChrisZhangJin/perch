@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -164,17 +165,51 @@ func TestProcessLongTaskSendsAckThenReply(t *testing.T) {
 	if len(rs) != 2 {
 		t.Fatalf("expected 2 replies (ack then real), got %d: %#v", len(rs), rs)
 	}
-	if !strings.Contains(rs[0].Body, "这个任务执行时间比较长") {
-		t.Errorf("first reply should be the Chinese ack, got %q", testPreview(rs[0].Body))
+	// The inbound email is English, so the ack is English. It used to be
+	// Chinese unconditionally.
+	if !strings.Contains(rs[0].Body, "take a while to run") {
+		t.Errorf("first reply should be the interim ack, got %q", testPreview(rs[0].Body))
 	}
-	if !strings.Contains(rs[0].Body, "10 分钟") {
+	if !strings.Contains(rs[0].Body, "around 10 minutes") {
 		t.Errorf("ack should carry the ETA=10, got %q", testPreview(rs[0].Body))
 	}
 	if !strings.Contains(rs[1].Body, "the answer") {
 		t.Errorf("second reply should carry the real answer, got %q", testPreview(rs[1].Body))
 	}
-	if strings.Contains(rs[1].Body, "这个任务执行时间比较长") {
+	if strings.Contains(rs[1].Body, "take a while to run") {
 		t.Errorf("second reply should NOT be the ack copy, got %q", testPreview(rs[1].Body))
+	}
+}
+
+// TestProcessLongTaskAckMirrorsChinese is the same path with a Chinese email:
+// perch writes this body itself, with no agent in the loop, so the language
+// choice is perch's to get right.
+func TestProcessLongTaskAckMirrorsChinese(t *testing.T) {
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{"批量任务分析\n<<<PERCH_CLASSIFY>>> long 10", "你好，\n\n已经完成"},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+	mt.App().Cfg().LongTaskAck = true
+
+	if _, err := mt.Send("alice@163.com", "agent@163.com", "批量任务",
+		"帮我把上个月的日志全部跑一遍，生成一份汇总报告。"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rs := mt.Replies()
+	if len(rs) != 2 {
+		t.Fatalf("expected 2 replies (ack then real), got %d: %#v", len(rs), rs)
+	}
+	if !strings.Contains(rs[0].Body, "这个任务执行时间比较长") {
+		t.Errorf("Chinese email should get the Chinese ack, got %q", testPreview(rs[0].Body))
+	}
+	if !strings.Contains(rs[0].Body, "10 分钟") {
+		t.Errorf("ack should carry the ETA=10, got %q", testPreview(rs[0].Body))
+	}
+	if strings.Contains(rs[0].Body, "take a while to run") {
+		t.Errorf("Chinese ack must not carry the English phrasing, got %q", testPreview(rs[0].Body))
 	}
 }
 
@@ -828,5 +863,186 @@ func TestProcessCapZeroDisablesIt(t *testing.T) {
 	}
 	if len(run.Prompts) != 5 {
 		t.Errorf("cap 0 means unlimited, got %d agent calls", len(run.Prompts))
+	}
+}
+
+// --- agent failure: what the SENDER sees ------------------------------------
+
+// TestProcessAgentFailureSendsOutOfOffice pins the reply an agent failure
+// produces. Regression 2026-08-25: nanopi was not installed on the host, and
+// the sender — a customer filing a complaint — received
+// `nanopi failed: exec: "nanopi": executable file not found in $PATH; stderr:`
+// as the body. The operator needs that string; the sender must never see it.
+func TestProcessAgentFailureSendsOutOfOffice(t *testing.T) {
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{""},
+		Errs: []error{errors.New(`nanopi failed: exec: "nanopi": executable file not found in $PATH; stderr: `)},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	if _, err := mt.Send("alice@163.com", "agent@163.com", "urgent", "please look at this"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rs := mt.Replies()
+	if len(rs) != 1 {
+		t.Fatalf("a failed run must still get a reply, got %d: %#v", len(rs), rs)
+	}
+	body := rs[0].Body
+	for _, leak := range []string{"exec:", "$PATH", "stderr", "nanopi", "failed"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("reply leaks internals (%q) to the sender:\n%s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "out of office") {
+		t.Errorf("reply should read as an out-of-office notice, got:\n%s", body)
+	}
+	// The email is done either way — leaving it unseen would re-run the same
+	// broken agent on the next poll and mail a second notice.
+	if seen := mt.SeenUIDs(); len(seen) != 1 {
+		t.Errorf("failed message should be marked seen, got %#v", seen)
+	}
+}
+
+// TestProcessAgentFailureMirrorsChinese: the notice is perch's own text, so
+// perch picks its language from the email it is answering.
+func TestProcessAgentFailureMirrorsChinese(t *testing.T) {
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{""},
+		Errs: []error{errors.New(`nanopi failed: exec: "nanopi": executable file not found in $PATH`)},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	if _, err := mt.Send("alice@163.com", "agent@163.com", "我要投诉！",
+		"kulink的服务有严重的bug，我要投诉。请让你们的主管联系我。"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rs := mt.Replies()
+	if len(rs) != 1 {
+		t.Fatalf("expected one reply, got %#v", rs)
+	}
+	if !strings.Contains(rs[0].Body, "不在工位上") {
+		t.Errorf("Chinese complaint should get the Chinese notice, got:\n%s", rs[0].Body)
+	}
+	if strings.Contains(rs[0].Body, "nanopi") || strings.Contains(rs[0].Body, "$PATH") {
+		t.Errorf("reply leaks internals:\n%s", rs[0].Body)
+	}
+}
+
+// TestProcessDegenerateTwiceSendsPoliteNotice covers the sibling path: the
+// agent ran (twice) but produced nothing but a greeting, so the sender gets a
+// rephrase request rather than an out-of-office notice — and, as above, no
+// mention of agents or empty responses.
+func TestProcessDegenerateTwiceSendsPoliteNotice(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi there,\n"}}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	if _, err := mt.Send("alice@163.com", "agent@163.com", "hi", "do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rs := mt.Replies()
+	if len(rs) != 1 {
+		t.Fatalf("expected one reply, got %#v", rs)
+	}
+	if !strings.Contains(rs[0].Body, "rephrase") {
+		t.Errorf("expected a rephrase request, got:\n%s", rs[0].Body)
+	}
+	if strings.Contains(strings.ToLower(rs[0].Body), "agent") {
+		t.Errorf("notice must not mention the agent machinery:\n%s", rs[0].Body)
+	}
+}
+
+// TestFailedFirstRunLeavesNoPhantomSession is the fix for what the 2026-08-25
+// log showed. session.Resolve mints and persists an id BEFORE the agent runs,
+// so the 18:31 run that died with `exec: "nanopi": executable file not found`
+// left an id naming a session nanopi never created. The next email in that
+// thread resumed it (`--session 6dc21741…`), nanopi answered "first line must
+// be a session header", and perch only recovered through the ErrSessionLost
+// cold retry — one wasted spawn and two alarming WARNs per affected thread.
+//
+// After the fix the second email is first-sight again: one spawn, is_new=true.
+func TestFailedFirstRunLeavesNoPhantomSession(t *testing.T) {
+	// Call 1 fails (the agent binary is missing); call 2 — the next email in
+	// the same thread — succeeds.
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{"", "Hi there,\n\nthe answer"},
+		Errs: []error{errors.New(`nanopi failed: exec: "nanopi": executable file not found in $PATH`)},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	// Both emails sit in the thread rooted at <m1@163.com>.
+	if err := mt.SendRaw(1, threadEML("m1@163.com", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.SendRaw(2, threadEML("m2@163.com", false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(run.IsNews) != 2 {
+		t.Fatalf("expected exactly 2 agent spawns (one per email), got %d: %#v", len(run.IsNews), run.IsNews)
+	}
+	if !run.IsNews[0] {
+		t.Error("first email should open a new session")
+	}
+	if !run.IsNews[1] {
+		t.Errorf("second email should ALSO be cold — the failed run's id was never real; got is_new=%v with sid %q",
+			run.IsNews[1], run.SIDs[1])
+	}
+	if run.SIDs[1] != "" && run.SIDs[1] == run.SIDs[0] {
+		t.Errorf("second email resumed the phantom id %q", run.SIDs[1])
+	}
+	// And the sender got a real answer the second time.
+	rs := mt.Replies()
+	if len(rs) != 2 || !strings.Contains(rs[1].Body, "the answer") {
+		t.Errorf("second email should get the real reply, got %#v", rs)
+	}
+}
+
+// TestFailedResumeKeepsConfirmedSession is the other half of the rule: a
+// session that HAS produced a turn must survive a later failure. Forgetting it
+// would strand the thread's history and silently restart the conversation.
+func TestFailedResumeKeepsConfirmedSession(t *testing.T) {
+	run := &mailtest.ScriptedRunner{
+		Outs: []string{"Hi there,\n\nfirst answer", ""},
+		Errs: []error{nil, errors.New("claude failed: exit status 1")},
+	}
+	mt := newTestApp(t, []string{"alice@163.com"}, run)
+
+	if err := mt.SendRaw(1, threadEML("m1@163.com", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sidAfterSuccess := mt.App().SessForTest()
+	want, _, _ := sidAfterSuccess.Resolve("<m1@163.com>")
+
+	// Second email in the thread: the resume fails for an unrelated reason.
+	if err := mt.SendRaw(2, threadEML("m2@163.com", false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, isNew, _ := mt.App().SessForTest().Resolve("<m1@163.com>")
+	if isNew || got != want {
+		t.Errorf("a confirmed session must survive a failed resume: got %q (isNew=%v), want %q",
+			got, isNew, want)
 	}
 }

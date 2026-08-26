@@ -66,23 +66,33 @@ func ParseClassifyOutput(s string) (runtime string, etaMin int) {
 	return runtime, etaMin
 }
 
-// BuildLongAckBody is the fixed Chinese acknowledgement body perch sends
-// when a task is classified as long. It includes the ETA (in minutes) if
-// the classifier supplied one; otherwise it omits the duration line.
-// A greeting line is prepended so the reply still satisfies perch's own
-// greeting protocol and clients render the thread cleanly.
-func BuildLongAckBody(fromName string, etaMin int) string {
-	greeting := "Hi there,"
-	if fromName != "" {
-		greeting = "Hi " + fromName + ","
-	}
+// BuildLongAckBody is the interim acknowledgement perch sends when a task is
+// classified as long. It includes the ETA (in minutes) if the classifier
+// supplied one; otherwise it omits the duration. A greeting and sign-off are
+// included so the ack renders in the thread like any other reply.
+//
+// zh selects the language, from the same looksChinese check the failure
+// notices use: this body used to be Chinese unconditionally, which mailed
+// Chinese to English senders. perch has no agent in the loop here, so it
+// carries one phrasing per language itself. agentName signs the message
+// (runner.AgentDisplayName of the agent mailbox).
+func BuildLongAckBody(fromName, agentName string, etaMin int, zh bool) string {
 	var b strings.Builder
-	b.WriteString(greeting)
+	b.WriteString(greetingFor(fromName, zh))
 	b.WriteString("\n\n")
-	b.WriteString("这个任务执行时间比较长，我先处理一下，请稍等。")
-	if etaMin > 0 {
-		fmt.Fprintf(&b, "预计需要 %d 分钟左右。", etaMin)
+	if zh {
+		b.WriteString("这个任务执行时间比较长，我先处理一下，请稍等。")
+		if etaMin > 0 {
+			fmt.Fprintf(&b, "预计需要 %d 分钟左右。", etaMin)
+		}
+		b.WriteString("\n\n处理完成后我会把结果邮件回复给你。")
+	} else {
+		b.WriteString("This one will take a while to run — I've started on it, so no need to do anything.")
+		if etaMin > 0 {
+			fmt.Fprintf(&b, " It should take around %d minutes.", etaMin)
+		}
+		b.WriteString("\n\nI'll email you the result in this thread as soon as it's done.")
 	}
-	b.WriteString("\n\n处理完成后我会把结果邮件回复给你。\n\nBest,\nperch\n")
+	b.WriteString(signOffFor(agentName, zh))
 	return b.String()
 }

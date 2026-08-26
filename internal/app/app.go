@@ -226,7 +226,9 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				a.log.Info("task classified",
 					"from", m.From, "runtime", runtime, "eta_min", etaMin)
 				if runtime == "long" {
-					ack := BuildLongAckBody(m.FromName, etaMin)
+					ack := BuildLongAckBody(m.FromName,
+						runner.AgentDisplayName(a.cfg.Email), etaMin,
+						looksChinese(failureLanguageSample(m.Subject, m.Body)))
 					if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
 						appendRef(m.References, m.MessageID), ack, nil); err != nil {
 						a.log.Warn("long-task ack send failed; continuing to run task",
@@ -271,6 +273,14 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				})
 		}
 
+		// sidUnconfirmed tracks whether sid names a session an agent has
+		// actually taken a turn in. Resolve persists a minted id BEFORE the
+		// agent runs, so on first sight the id is a promise, not a fact; the
+		// stale id on the session-lost path below is worse than unconfirmed,
+		// it is known-dead. Either way, a run that then fails must not leave
+		// that id in the registry — see Registry.Forget.
+		sidUnconfirmed := isNew
+
 		out, nativeID, err := a.run.Run(ctx, buildPrompt(isNew), sid, isNew)
 		// A resume can fail because the stored session id no longer maps to
 		// a live agent session. The thread is still serviceable from a cold
@@ -281,6 +291,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if errors.Is(err, runner.ErrSessionLost) && !isNew {
 			a.log.Warn("session lost; retrying with a cold session and full contracts",
 				"from", m.From, "stale_sid", sid)
+			sidUnconfirmed = true
 			// Rebuild the body too: a cold session has no history, so quoted
 			// text stripped for the resume has to come back.
 			m.Body = originalBody
@@ -288,9 +299,21 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			out, nativeID, err = a.run.Run(ctx, buildPrompt(true), "", true)
 		}
 		if err != nil {
+			// Drop an unconfirmed session id: nothing ever ran in it, so
+			// keeping it costs the NEXT email in this thread a doomed resume
+			// (spawn → "session lost" → cold retry) before it recovers.
+			if sidUnconfirmed {
+				if ferr := a.sess.Forget(m.ThreadRoot()); ferr != nil {
+					a.log.Warn("session forget failed", "from", m.From, "err", ferr)
+				}
+			}
+			// The operator gets the real error here, in the log. The sender
+			// gets an out-of-office notice: the raw error is meaningless to
+			// them and leaks binary names, paths and stderr. See failure.go.
 			a.log.Error("agent run failed", "from", m.From, "err", err)
+			zh := looksChinese(failureLanguageSample(m.Subject, originalBody))
 			_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
-				"Sorry, the task failed to complete: "+err.Error(), nil)
+				BuildAgentFailureBody(m.FromName, runner.AgentDisplayName(a.cfg.Email), zh), nil)
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
@@ -357,8 +380,9 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			if IsDegenerateReply(greeted) {
 				a.log.Error("agent produced a greeting-only reply twice; not sending bare greeting",
 					"from", m.From, "subject", m.Subject)
+				zh := looksChinese(failureLanguageSample(m.Subject, originalBody))
 				_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
-					"Sorry, the task did not produce a reply (the agent returned an empty response twice). Please resend or rephrase the task.", nil)
+					BuildNoReplyBody(m.FromName, runner.AgentDisplayName(a.cfg.Email), zh), nil)
 				_ = a.mb.MarkSeen(ctx, m.UID)
 				continue
 			}

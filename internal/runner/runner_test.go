@@ -660,8 +660,8 @@ func TestAgentDisplayName(t *testing.T) {
 		{"noatsign", "noatsign"},
 	}
 	for _, c := range cases {
-		if got := agentDisplayName(c.in); got != c.want {
-			t.Errorf("agentDisplayName(%q) = %q, want %q", c.in, got, c.want)
+		if got := AgentDisplayName(c.in); got != c.want {
+			t.Errorf("AgentDisplayName(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

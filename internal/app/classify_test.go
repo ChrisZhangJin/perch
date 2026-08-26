@@ -63,8 +63,8 @@ func TestParseClassifyOutput_ZeroETAKept(t *testing.T) {
 }
 
 func TestBuildLongAckBody_WithETA(t *testing.T) {
-	body := BuildLongAckBody("Chris", 8)
-	if !strings.Contains(body, "Hi Chris,") {
+	body := BuildLongAckBody("小明", "tommy", 8, true)
+	if !strings.Contains(body, "您好 小明，") {
 		t.Errorf("missing greeting: %s", body)
 	}
 	if !strings.Contains(body, "预计需要 8 分钟") {
@@ -73,15 +73,36 @@ func TestBuildLongAckBody_WithETA(t *testing.T) {
 	if !strings.Contains(body, "我先处理一下") {
 		t.Errorf("missing ack line: %s", body)
 	}
+	if !strings.Contains(body, "tommy") {
+		t.Errorf("ack must sign off as the agent mailbox: %s", body)
+	}
 }
 
 func TestBuildLongAckBody_NoETA_NoName(t *testing.T) {
-	body := BuildLongAckBody("", 0)
-	if !strings.Contains(body, "Hi there,") {
+	body := BuildLongAckBody("", "tommy", 0, true)
+	if !strings.Contains(body, "您好，") {
 		t.Errorf("expected generic greeting: %s", body)
 	}
 	if strings.Contains(body, "预计需要") {
 		t.Errorf("ETA line should be absent when etaMin=0: %s", body)
+	}
+}
+
+// TestBuildLongAckBody_English pins the language switch. This body was
+// Chinese unconditionally until 2026-08-25, so an English sender waiting on a
+// long task got an interim ack they could not read.
+func TestBuildLongAckBody_English(t *testing.T) {
+	body := BuildLongAckBody("Chris", "tommy", 8, false)
+	if !strings.Contains(body, "Hi Chris,") {
+		t.Errorf("missing greeting: %s", body)
+	}
+	if !strings.Contains(body, "around 8 minutes") {
+		t.Errorf("missing ETA: %s", body)
+	}
+	for _, zh := range []string{"预计", "我先处理", "此致"} {
+		if strings.Contains(body, zh) {
+			t.Errorf("English ack must not contain %q: %s", zh, body)
+		}
 	}
 }
 

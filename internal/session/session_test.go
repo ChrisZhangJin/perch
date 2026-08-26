@@ -103,3 +103,53 @@ func TestReplaceSameIDNoOp(t *testing.T) {
 		t.Errorf("Replace with same id should be a no-op, got %v", err)
 	}
 }
+
+// TestForgetDropsUnconfirmedID pins the cleanup path. Resolve persists an id
+// before the agent has run, so a first run that dies leaves an id naming a
+// session that was never created. Forget makes the next email in the thread
+// first-sight again instead of resuming a phantom.
+func TestForgetDropsUnconfirmedID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	r, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, isNew, err := r.Resolve("<t1@x>")
+	if err != nil || !isNew || id == "" {
+		t.Fatalf("Resolve: id=%q isNew=%v err=%v", id, isNew, err)
+	}
+	if err := r.Forget("<t1@x>"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	// Same thread must now look brand new, with a different id.
+	id2, isNew2, err := r.Resolve("<t1@x>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isNew2 {
+		t.Error("after Forget the thread must be first sight again")
+	}
+	if id2 == id {
+		t.Errorf("Forget then Resolve returned the same id %q", id2)
+	}
+	// And the removal must have hit disk, not just the map.
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := reloaded.Resolve("<t1@x>"); got != id2 {
+		t.Errorf("reloaded registry id = %q, want the post-Forget id %q", got, id2)
+	}
+}
+
+// TestForgetUnknownThreadIsNoOp: the caller is cleaning up after a failure,
+// not asserting that the key was there.
+func TestForgetUnknownThreadIsNoOp(t *testing.T) {
+	r, err := Load(filepath.Join(t.TempDir(), "sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Forget("<never-seen@x>"); err != nil {
+		t.Errorf("Forget on an unknown thread: %v, want nil", err)
+	}
+}

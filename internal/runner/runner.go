@@ -140,13 +140,13 @@ func readSessionHeaderID(path string) string {
 	return ""
 }
 
-// agentDisplayName derives a human-readable name from the agent's email
+// AgentDisplayName derives a human-readable name from the agent's email
 // for the sign-off template. For "agent_phillip@163.com" it returns
 // "phillip"; for "agent_tommy@163.com" it returns "tommy". Names are
 // raw lowercase (no capitalization). Falls back to the original local-
 // part when the address doesn't start with the agent_ prefix, and to
 // "there" on empty input or on "" after the agent_ prefix strip.
-func agentDisplayName(email string) string {
+func AgentDisplayName(email string) string {
 	at := strings.LastIndex(email, "@")
 	local := email
 	if at >= 0 {
@@ -201,7 +201,7 @@ type PromptOpts struct {
 // terse CLI tone come across as rude to a human recipient. fromName is
 // the sender's display name from the From header ("Chris"); when non-
 // empty it's used in the salutation ("Hi Chris,"). The sign-off derives
-// the agent's own name from agentEmail via agentDisplayName so the
+// the agent's own name from agentEmail via AgentDisplayName so the
 // reply email ends with "Best,\n<local-part>" matching the agent's
 // mailbox. Files the agent writes into replyDir are attached to the
 // reply automatically; the body should be a one-line caption, not a

@@ -75,6 +75,30 @@ func (r *Registry) Replace(threadRoot, newID string) error {
 	return r.save()
 }
 
+// Forget drops the mapping for a thread root, so the next email in that
+// thread is treated as first sight and starts a genuinely cold session.
+// Absent keys are not an error — the caller is cleaning up, not asserting.
+//
+// This exists because Resolve mints and PERSISTS an id before the agent has
+// run. When that first run dies outright — a missing binary, a crash, an
+// exhausted quota — the id it minted names a session no agent ever created.
+// Left in place, the next email in the thread resolves to it with isNew=false,
+// spawns a resume against a session that isn't there, and only recovers via
+// the ErrSessionLost cold-retry path: one wasted agent invocation and a pair
+// of alarming WARNs per affected thread. Observed 2026-08-25.
+//
+// Only call this when the id has NOT been confirmed by a successful run.
+// Forgetting a working session id would strand the thread's real history.
+func (r *Registry) Forget(threadRoot string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.m[threadRoot]; !ok {
+		return nil
+	}
+	delete(r.m, threadRoot)
+	return r.save()
+}
+
 func (r *Registry) save() error {
 	data, err := json.MarshalIndent(r.m, "", "  ")
 	if err != nil {
