@@ -150,6 +150,19 @@ func runWizard(cfg *config.Config, in io.Reader, out io.Writer, pw PasswordFn) e
 // prompt writes "<label>: [<default>] (<hint>)\n" and reads one line. Empty
 // input keeps the default; anything else replaces it.
 func prompt(in io.Reader, out io.Writer, label, def, hint string) string {
+	v, _ := promptOnce(in, out, label, def, hint)
+	return v
+}
+
+// promptOnce is prompt() that also reports whether the reader is EXHAUSTED,
+// which prompt() cannot express: it answers the default both for "the user
+// pressed Enter" and for "there is no more input", and those two need
+// different handling in a retry loop. ok is false once the reader is done.
+//
+// Fscanln returns io.EOF on an exhausted reader and "unexpected newline" on a
+// bare Enter. Only the former ends a loop; the latter is a real answer meaning
+// "take the default".
+func promptOnce(in io.Reader, out io.Writer, label, def, hint string) (value string, ok bool) {
 	if hint != "" {
 		fmt.Fprintf(out, "%s: [%s] (%s)\n", label, def, hint)
 	} else {
@@ -157,40 +170,66 @@ func prompt(in io.Reader, out io.Writer, label, def, hint string) string {
 	}
 	var got string
 	_, err := fmt.Fscanln(in, &got)
-	if err != nil && err != io.EOF {
-		// On EOF or scan error, keep the default.
-		got = ""
+	if errors.Is(err, io.EOF) {
+		return def, false
+	}
+	if err != nil {
+		got = "" // scan error (e.g. a bare newline) => take the default
 	}
 	if got == "" {
-		return def
+		return def, true
 	}
-	return got
+	return got, true
 }
 
 func joinList(xs []string) string {
 	return strings.Join(xs, ", ")
 }
 
+// maxAgentPrompts bounds the re-ask loop below. Any reader that keeps
+// answering with a name whose binary is missing would otherwise spin forever;
+// after this many tries the wizard keeps the last answer and moves on, and the
+// daemon preflight reports the missing binary.
+const maxAgentPrompts = 5
+
 // promptAgent is prompt() with a binary-on-PATH check after each pick.
 // The wizard refuses to accept an agent name whose binary isn't found —
 // perch dies with a confusing error otherwise when the runner tries to
 // exec a missing command. On EOF (non-TTY) we keep the default and let
 // the daemon preflight catch it later, matching how other fields work.
+//
+// The EOF check is why this uses promptOnce rather than prompt. prompt()
+// answers the DEFAULT when input runs out, never "", so the old `if got == ""`
+// guard could not fire: with no agent installed, every iteration re-read an
+// exhausted reader, got the default back, failed the lookup, printed two lines
+// and looped — forever, growing the output writer until the process died. CI
+// hit exactly that (internal/setup killed after 99s, exit 143) on every run,
+// because GitHub's runners have no claude/nanopi/pi on PATH while a developer
+// machine does. Fixed 2026-08-26.
 func promptAgent(in io.Reader, out io.Writer, def string) string {
-	for {
-		got := prompt(in, out, "AI agent", def, "claude / nanopi / pi")
-		// Empty here means EOF or scan error inside prompt() — keep default.
-		if got == "" {
-			return def
+	for i := 0; i < maxAgentPrompts; i++ {
+		got, ok := promptOnce(in, out, "AI agent", def, "claude / nanopi / pi")
+		if !ok {
+			return def // reader exhausted: nothing left to re-ask
 		}
-		if _, err := agent.BinaryPath(got); err != nil {
-			fmt.Fprintf(out, "  ! %v\n", err)
-			fmt.Fprintln(out, "    pick another, or Ctrl-D to abort.")
-			def = got // last attempted value, so re-prompt doesn't reset hint
-			continue
+		_, err := agent.BinaryPath(got)
+		if err == nil {
+			return got
 		}
-		return got
+		fmt.Fprintf(out, "  ! %v\n", err)
+		if got == def {
+			// The operator accepted the name already on offer, so re-asking
+			// would just show the same line again — and would eat a second
+			// line of input, throwing every later prompt in the wizard onto
+			// the wrong question. Take the answer; the daemon preflight
+			// refuses to start until the binary exists.
+			fmt.Fprintln(out, "    keeping it — install it before starting perch.")
+			return got
+		}
+		fmt.Fprintln(out, "    pick another, or press Enter to keep this one.")
+		def = got // last attempted value, so the re-prompt offers it back
 	}
+	return def
 }
 
 func splitAndTrim(s string) []string {

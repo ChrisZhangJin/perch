@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ChrisZhangJin/perch/internal/config"
 )
@@ -329,5 +330,68 @@ func TestEnsureInteractiveAllowFromDefaultIsWildlet(t *testing.T) {
 	}
 	if strings.Contains(body, "allow_from: []") {
 		t.Errorf("persisted file must NOT contain `allow_from: []` (that's deny-all), got:\n%s", body)
+	}
+}
+
+// TestPromptAgentTerminatesWithoutAnAgentInstalled is the regression test for
+// the CI failure that ran from 2026-08-11 to 2026-08-26: every single run
+// killed internal/setup after ~99s with exit 143.
+//
+// The cause was environmental, which is why it never showed up locally. A
+// developer machine has claude on PATH, so promptAgent returned on the first
+// try. GitHub's runners have none of claude/nanopi/pi, so BinaryPath always
+// failed — and prompt() answers with the DEFAULT when input runs out, never
+// with "", so the `if got == ""` guard could not fire. Each iteration re-read
+// an exhausted reader, got the default back, failed the lookup, wrote two
+// lines to the output buffer and looped. The buffer grew until the runner died.
+//
+// The test pins the environment (empty PATH) rather than the mechanism, and
+// bounds itself with a timer: a regression must fail in a second, not hang
+// the suite for the ten minutes it takes `go test` to give up.
+func TestPromptAgentTerminatesWithoutAnAgentInstalled(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no claude, no nanopi, no pi — like CI
+
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"exhausted reader", "", "claude"},
+		{"bare enter accepts the offered default", "\n", "claude"},
+		{"typed name that is missing is kept after one re-ask", "nanopi\n\n", "nanopi"},
+		// 100 lines of missing agents: the cap ends it, and which of the two
+		// names it stops on is an artifact of where the cap lands — the point
+		// is that it stops at all.
+		{"a reader full of names still terminates", strings.Repeat("pi\nnanopi\n", 50), "pi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan string, 1)
+			go func() {
+				out := &bytes.Buffer{}
+				done <- promptAgent(strings.NewReader(tc.input), out, "claude")
+			}()
+			select {
+			case got := <-done:
+				if got != tc.want {
+					t.Errorf("promptAgent = %q, want %q", got, tc.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("promptAgent did not return: the wizard is spinning again")
+			}
+		})
+	}
+}
+
+// TestPromptAgentConsumesOneLinePerPrompt guards the subtler half of the fix.
+// The wizard reads its fields in order from one stream, so an agent prompt
+// that swallows an extra line silently shifts every later answer onto the
+// wrong question — allow_from would receive the email address, and so on.
+func TestPromptAgentConsumesOneLinePerPrompt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	in := strings.NewReader("\nnext-field\n")
+	if got := promptAgent(in, &bytes.Buffer{}, "claude"); got != "claude" {
+		t.Fatalf("promptAgent = %q, want claude", got)
+	}
+	rest, _ := io.ReadAll(in)
+	if strings.TrimSpace(string(rest)) != "next-field" {
+		t.Errorf("promptAgent ate the next prompt's input; left %q", rest)
 	}
 }
