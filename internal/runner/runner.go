@@ -446,11 +446,18 @@ func (r *Runner) runOnce(ctx context.Context, prompt, sessionID string, isNew bo
 		)
 		return "", "", fmt.Errorf("%s failed: %w; stderr: %s", r.ag.Name, err, strings.TrimSpace(stderr.String()))
 	}
+	// Log stderr on SUCCESS too, not just on failure. An agent that fails a
+	// tool call mid-run and recovers still exits 0, and what it wrote about
+	// that failure — the command, the error text — often goes to stderr while
+	// stdout carries only the rendered marker ("[bash ✗ 46 bytes]"). Dropping
+	// it left the operator with a log that says a tool call failed but not
+	// what it was (reported 2026-08-25).
 	r.log.Debug("agent exit",
 		"agent", r.ag.Name,
 		"exit_code", exitCode,
 		"duration", dur,
 		"stdout_bytes", stdout.Len(),
+		"stderr", strings.TrimSpace(stderr.String()),
 	)
 	reply := strings.TrimSpace(stdout.String())
 
