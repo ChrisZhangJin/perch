@@ -87,7 +87,35 @@ func newEndDetectApp(t *testing.T, url string) *mailtest.Mailtest {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// perch has already taken part in <root@mailtest>, so continuations of
+	// it are eligible. A thread perch has never seen is a first email and is
+	// always answered — see TestEndDetectIgnoresFirstEmailInThread.
+	if _, _, err := mt.App().SessForTest().Resolve("<root@mailtest>"); err != nil {
+		t.Fatal(err)
+	}
 	return mt
+}
+
+// TestEndDetectIgnoresFirstEmailInThread: a continuation of a thread perch has
+// never answered (it was Cc'd or forwarded in mid-thread) is still the first
+// email perch sees there, so it is answered without asking Jev.
+func TestEndDetectIgnoresFirstEmailInThread(t *testing.T) {
+	var calls int
+	mt := newEndDetectApp(t, endDetectServer(t, 0.99, &calls).URL)
+
+	if err := mt.SendRaw(11, rawMail("<c9@mailtest>", "Re: other",
+		"<other-root@mailtest>", "好的，谢谢！")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Errorf("jev calls = %d, want 0 for the first email perch sees in a thread", calls)
+	}
+	if rs := mt.Replies(); len(rs) != 1 {
+		t.Errorf("first email must be answered, got %d replies", len(rs))
+	}
 }
 
 // rawMail builds an RFC822 message. When inReplyTo is empty the message is a

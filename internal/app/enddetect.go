@@ -112,7 +112,7 @@ func ParseEndDetect(ans map[string]jev.Answer) (probOver float64, err error) {
 
 // conversationEnded reports whether this message closes its thread and can
 // be left unanswered. False for every uncertain case; see the file comment.
-func (a *App) conversationEnded(ctx context.Context, m *message.Message) bool {
+func (a *App) conversationEnded(ctx context.Context, m *message.Message, isNew bool) bool {
 	// The "didn't run" reasons are logged at DEBUG, not INFO: two of the
 	// three are the steady state (feature off, or every thread root), and
 	// an INFO line per email saying "the disabled feature stayed disabled"
@@ -133,6 +133,16 @@ func (a *App) conversationEnded(ctx context.Context, m *message.Message) bool {
 	// there is no prior turn for "thanks" to be thanking.
 	if m.InReplyTo == "" && len(m.References) == 0 {
 		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "thread_root",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
+		return false
+	}
+	// The first email perch sees in a thread always gets a reply, even when
+	// it carries In-Reply-To: being Cc'd or forwarded into an existing human
+	// thread makes a continuation perch has never answered, so there is no
+	// perch reply for a "thanks" to be closing. isNew comes from the session
+	// registry — perch's own record of threads it has taken part in.
+	if isNew {
+		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "first_email",
 			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 		return false
 	}

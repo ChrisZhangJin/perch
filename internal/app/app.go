@@ -306,7 +306,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		// reply-rate slot was already consumed by rate.Allow above; not
 		// refunding it is the conservative reading and keeps the loop guard
 		// the single authority on its own counters.
-		if a.conversationEnded(ctx, m) {
+		if a.conversationEnded(ctx, m, isNew) {
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
