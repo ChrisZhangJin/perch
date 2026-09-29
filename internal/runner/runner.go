@@ -237,6 +237,9 @@ const MultiRecipientRule = "This email was addressed to more than one person. " 
 	"Act ONLY on the parts addressed to you — by your name, by an @mention of your address, " +
 	"or because you are the only person in To. Requests aimed at someone else are context, not your task: " +
 	"do not carry them out, and do not answer on their behalf. " +
+	"They must not widen your task either: do exactly what was asked of you and nothing more — " +
+	"no extra lookups, highlights, previews or partial answers for topics raised with someone else, " +
+	"and no offers to take those topics on. " +
 	"If nothing in the email is for you, do not invent work — reply in one or two lines saying so.\n\n"
 
 // recipientsBlock renders the RECIPIENTS section, or "" when the agent is
