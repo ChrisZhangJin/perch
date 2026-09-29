@@ -8,21 +8,24 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath -ldflags '$(LDFLAGS)'
 
 # Compress the resulting binary with UPX (https://upx.github.io/). UPX
-# shrinks our static, stripped Go binary by ~60% (typical 7 MB -> ~2.8 MB on
-# linux/amd64) at the cost of a tiny startup decompression pass. Set
-# PERCH_NO_UPX=1 to skip compression (CI / cases where UPX is unavailable).
+# shrinks our static, stripped Go binary by ~65-70% (email-cli: 4.7 MB ->
+# ~1.6 MB on linux/amd64 with --lzma) at the cost of a tiny startup
+# decompression pass. Set PERCH_NO_UPX=1 to skip compression (CI / cases
+# where UPX is unavailable).
 ifeq ($(PERCH_NO_UPX),1)
 UPX :=
 else
 UPX ?= $(shell command -v upx 2>/dev/null)
 endif
-UPX_FLAGS ?= --best --no-color
+# --lzma packs ~14% tighter than the default filter; the extra decompression
+# cost at startup is sub-millisecond for a binary this size.
+UPX_FLAGS ?= --best --lzma --no-color
 
 # Host platform (override GOOS/GOARCH for cross-compiles).
 GOOS   ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build build-all build-mailtest build-testmode compress test test-hooks vet fmt tidy run clean
+.PHONY: all build build-all build-email build-mailtest build-testmode compress test test-hooks vet fmt tidy run clean
 
 all: build
 
@@ -43,6 +46,17 @@ build-all:
 	$(MAKE) build GOOS=linux  GOARCH=amd64 && mv bin/$(BINARY) bin/$(BINARY)-linux-amd64
 	$(MAKE) build GOOS=linux  GOARCH=arm64 && mv bin/$(BINARY) bin/$(BINARY)-linux-arm64
 	$(MAKE) build GOOS=darwin GOARCH=arm64 && mv bin/$(BINARY) bin/$(BINARY)-darwin-arm64
+
+## build-email: static one-shot mail sender CLI -> ./bin/email-cli
+build-email:
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
+		go build $(GOFLAGS) -o bin/email-cli ./email-cli
+	@if [ -n "$(UPX)" ]; then \
+		echo "upx $(UPX_FLAGS) bin/email-cli"; \
+		$(UPX) $(UPX_FLAGS) bin/email-cli; \
+	else \
+		echo "upx not found on PATH; skipping compression."; \
+	fi
 
 ## build-mailtest: static mailtest harness CLI -> ./bin/mailtest
 build-mailtest:
