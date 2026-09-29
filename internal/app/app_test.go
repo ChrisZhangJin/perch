@@ -4,14 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/config"
+	"github.com/ChrisZhangJin/perch/internal/gate"
 	"github.com/ChrisZhangJin/perch/internal/mailtest"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 	"github.com/ChrisZhangJin/perch/internal/runner"
+	"github.com/ChrisZhangJin/perch/internal/session"
 )
 
 // newTestApp builds a Mailtest with a fresh AgentWorkdir and the given
@@ -1011,6 +1017,129 @@ func TestFailedFirstRunLeavesNoPhantomSession(t *testing.T) {
 	if len(rs) != 2 || !strings.Contains(rs[1].Body, "the answer") {
 		t.Errorf("second email should get the real reply, got %#v", rs)
 	}
+}
+
+// --- SMTP failure: retry across polls, then give up -------------------------
+
+// smtpDeadSender is a ReplySender whose Reply always fails at SMTP, like the
+// 2026-09-29 535. It implements the two optional interfaces the real
+// *replier.Replier does — FailureNotifier and AttemptHooker — so the test sees
+// both the notice and the attempt count perch reports in it.
+type smtpDeadSender struct {
+	attemptsPerReply int // what the internal retry loop would have burned
+	hook             func(attempt int, err error, msgSize int)
+	sends            int
+	notices          int
+	noticeAttempts   int
+}
+
+func (s *smtpDeadSender) SetHook(fn func(attempt int, err error, msgSize int)) { s.hook = fn }
+
+func (s *smtpDeadSender) Reply(to, subject, inReplyTo string, refs []string, body string, att []string) error {
+	s.sends++
+	err := fmt.Errorf("%w (account agent@163.com): 535 Error: authentication failed", replier.ErrAuth)
+	for i := 1; i <= s.attemptsPerReply; i++ {
+		s.hook(i, err, len(body))
+	}
+	return err
+}
+
+func (s *smtpDeadSender) NotifyFailure(to, subject, inReplyTo string, refs []string, attempts int, lastErr error, msgSize int) error {
+	s.notices++
+	s.noticeAttempts = attempts
+	return nil
+}
+
+// TestProcessRetriesFailedReplyThenGivesUp pins the whole 2026-09-29 fix.
+//
+// Before it, one 535 lost the reply permanently: the branch said "leave unseen
+// so a later poll retries", but gate.FirstSight had already recorded the
+// Message-ID, so every later poll logged "dedup skipped" and the mail sat
+// unread forever — while the sender got a notice claiming 3 attempts when
+// exactly one had happened.
+//
+// Now: the first two failures leave the message unseen, send no notice, and
+// forget the dedup record so the next poll really does retry. The third gives
+// up — notice sent, quoting the REAL attempt count, and the mail marked seen so
+// it stops accumulating in INBOX.
+func TestProcessRetriesFailedReplyThenGivesUp(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nthe answer"}}
+	// One attempt per Reply — the incident's shape, and the count the notice
+	// used to get wrong. The sender has to be in place at app.New time: that
+	// is where the attempt hook is installed.
+	sender := &smtpDeadSender{attemptsPerReply: 1}
+	mb, a := newAppWithSender(t, []string{"alice@163.com"}, run, sender)
+
+	// The same message redelivered on three consecutive polls. FetchUnseen
+	// drains, so re-queueing it is how the harness models "still unseen in
+	// INBOX"; the Message-ID is identical every time, which is exactly what
+	// FirstSight used to dedup away.
+	for poll := uint32(1); poll <= 3; poll++ {
+		mb.Enqueue(poll, wlEMLBytes())
+		if err := a.ProcessUnseen(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		switch poll {
+		case 1, 2:
+			if sender.sends != int(poll) {
+				t.Fatalf("poll %d: the message was deduped away instead of retried (%d send attempts)",
+					poll, sender.sends)
+			}
+			if sender.notices != 0 {
+				t.Errorf("poll %d: notified the sender before giving up", poll)
+			}
+			if seen := mb.SeenUIDs(); len(seen) != 0 {
+				t.Errorf("poll %d: message marked seen while retries remain: %v", poll, seen)
+			}
+		case 3:
+			if sender.notices != 1 {
+				t.Errorf("final failure should send exactly one notice, got %d", sender.notices)
+			}
+			if sender.noticeAttempts != 1 {
+				t.Errorf("notice reports %d attempt(s); the sender made 1 — the hardcoded 3 is what misled the 2026-09-29 diagnosis",
+					sender.noticeAttempts)
+			}
+			if seen := mb.SeenUIDs(); len(seen) != 1 || seen[0] != 3 {
+				t.Errorf("after giving up the mail must be marked seen, got %v", seen)
+			}
+		}
+	}
+	if sender.sends != 3 {
+		t.Errorf("expected 3 reply attempts across the 3 polls, got %d", sender.sends)
+	}
+
+	// Having given up, the counter is cleared — a later redelivery starts its
+	// own budget rather than being notified instantly.
+	sender.notices = 0
+	mb.Enqueue(4, wlEMLBytes())
+	if err := a.ProcessUnseen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sender.notices != 0 {
+		t.Error("the failure counter should have been cleared when perch gave up")
+	}
+}
+
+// newAppWithSender wires a real *app.App around the mailtest fakes with a
+// caller-supplied ReplySender. Unlike mailtest.New, the sender is present at
+// construction, which is what the optional FailureNotifier / AttemptHooker
+// assertions in app.New need.
+func newAppWithSender(t *testing.T, allowFrom []string, run app.TaskRunner, rep app.ReplySender) (*mailtest.FakeMailbox, *app.App) {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.MaxPromptBytes = 4096
+	cfg.AgentWorkdir = t.TempDir()
+	g, err := gate.New(allowFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := session.Load(filepath.Join(cfg.AgentWorkdir, "sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb := &mailtest.FakeMailbox{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return mb, app.New(cfg, mb, g, sess, run, rep, log)
 }
 
 // TestFailedResumeKeepsConfirmedSession is the other half of the rule: a

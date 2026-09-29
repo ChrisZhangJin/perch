@@ -125,13 +125,7 @@ func (m *Mailtest) Replies() []Reply { return m.rep.Replies() }
 
 // SeenUIDs returns every UID passed to MarkSeen, in append-order. Includes
 // both whitelisted and rejected sends.
-func (m *Mailtest) SeenUIDs() []uint32 {
-	m.mb.mu.Lock()
-	defer m.mb.mu.Unlock()
-	out := make([]uint32, len(m.mb.seen))
-	copy(out, m.mb.seen)
-	return out
-}
+func (m *Mailtest) SeenUIDs() []uint32 { return m.mb.SeenUIDs() }
 
 // App exposes the underlying *app.App for tests that need to flip config
 // fields (e.g. cfg.LongTaskAck = true) after construction. Direct mutation

@@ -161,6 +161,13 @@ type Replier struct {
 	MaxAttempts int
 	// retryDelay is the base backoff between attempts. Defaults to 1s if zero.
 	retryDelay time.Duration
+	// authRetryDelay is the base backoff used when the previous attempt was
+	// rejected at AUTH. Defaults to 5s if zero — deliberately much longer than
+	// retryDelay, because a 535 from 163 is a risk-control throttle whose
+	// window is measured in seconds (see ErrAuth). Retrying a throttle after a
+	// millisecond just spends another of the attempts on the same refusal.
+	// Tests shrink it, same as retryDelay.
+	authRetryDelay time.Duration
 	// onAttempt, if non-nil, is invoked after each attempt with (attempt #, err).
 	// Used by app.go to log per-attempt details and to trigger failure
 	// notifications when MaxAttempts is exhausted.
@@ -181,7 +188,8 @@ func (r *Replier) SetHook(fn func(attempt int, err error, msgSize int)) { r.onAt
 
 // Reply composes and sends a threaded reply over implicit-TLS SMTP (163 :465)
 // with up to MaxAttempts attempts (default 3) and exponential backoff on
-// transient errors. Permanent failures (auth, DNS, malformed addr) fail fast.
+// retryable errors (transient network blips, plus AUTH rejections — see
+// ErrAuth). Permanent failures (bad address, malformed message) fail fast.
 // If attachments is non-empty the message becomes multipart/mixed.
 //
 // The onAttempt hook fires after every attempt including the final one. When
@@ -203,11 +211,6 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 	if maxAttempts < 1 {
 		maxAttempts = 3
 	}
-	baseDelay := r.retryDelay
-	if baseDelay <= 0 {
-		baseDelay = time.Second
-	}
-
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err := r.sendOnce(to, msg)
@@ -218,13 +221,13 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 			return nil
 		}
 		lastErr = err
-		if !isTransient(err) {
+		if !r.retryable(err) {
 			return err // permanent — fail fast
 		}
 		if attempt == maxAttempts {
 			break // last try exhausted
 		}
-		time.Sleep(baseDelay << (attempt - 1)) // 1s, 2s, 4s, ...
+		time.Sleep(r.backoff(err) << (attempt - 1)) // 1s, 2s, 4s, ... (5s, 10s on AUTH)
 	}
 	return fmt.Errorf("smtp send failed after %d attempts: %w", maxAttempts, lastErr)
 }
@@ -313,11 +316,6 @@ func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []stri
 	if maxAttempts < 1 {
 		maxAttempts = 3
 	}
-	baseDelay := r.retryDelay
-	if baseDelay <= 0 {
-		baseDelay = time.Second
-	}
-
 	var lastSendErr error
 	dialer := r.dial
 	if dialer == nil {
@@ -362,27 +360,67 @@ func (r *Replier) NotifyFailure(to, subject, inReplyTo string, references []stri
 			return nil
 		}
 		lastSendErr = err
-		if !isTransient(err) {
+		if !r.retryable(err) {
 			return err
 		}
 		if attempt < maxAttempts {
-			time.Sleep(baseDelay << (attempt - 1))
+			time.Sleep(r.backoff(err) << (attempt - 1))
 		}
 	}
 	return fmt.Errorf("failure notification send failed after %d attempts: %w", maxAttempts, lastSendErr)
 }
 
+// ErrAuth marks an SMTP authentication failure (163 returns "535 Error:
+// authentication failed").
+//
+// This was documented as permanent — "the credentials were rejected, so
+// retrying them is futile" — and that turned out to be wrong. Observed
+// 2026-09-29: a reply to vos_th@163.com died with
+// `535 Error: authentication failed`, and the "Perch failed:" notice that
+// followed reached the sender under a second later over a fresh connection
+// using the byte-identical PlainAuth call, same account, same auth code, same
+// smtp.163.com:465. The credential was correct the whole time; 163 reuses 535
+// for risk-control / login-rate rejection, and a single flake permanently lost
+// that reply because we gave up after one attempt.
+//
+// So it is retryable — but with authRetryDelay rather than retryDelay, since
+// the throttle window is seconds. Note this is NOT done by making isTransient
+// true for ErrAuth: isTransient describes network blips and has its own
+// contract. Use (*Replier).retryable instead.
+//
+// The wrapped error names the auth account, since the message's from/to are
+// irrelevant to a credential rejection; callers match it with errors.Is to log
+// the account instead of the recipient.
+var ErrAuth = errors.New("smtp authentication failed")
+
+// retryable reports whether another attempt is worth making: a network blip,
+// or an AUTH rejection (see ErrAuth — 163's 535 is not reliably permanent).
+func (r *Replier) retryable(err error) bool {
+	return isTransient(err) || errors.Is(err, ErrAuth)
+}
+
+// backoff returns the base delay to use after err, before the per-attempt
+// doubling. An AUTH rejection gets the much longer authRetryDelay: retrying
+// 163's risk-control throttle a second later just burns an attempt.
+func (r *Replier) backoff(err error) time.Duration {
+	if errors.Is(err, ErrAuth) {
+		if r.authRetryDelay > 0 {
+			return r.authRetryDelay
+		}
+		return 5 * time.Second
+	}
+	if r.retryDelay > 0 {
+		return r.retryDelay
+	}
+	return time.Second
+}
+
 // isTransient reports whether err is the kind of network blip that might
 // succeed on retry: broken pipe, connection reset, EOF, timeout, "421 try
 // again later" / "450 mailbox unavailable" style SMTP replies, DNS hiccups.
-// Permanent failures (auth fail, bad address, malformed message) return false.
-// ErrAuth marks an SMTP authentication failure (163 returns "535 Error:
-// authentication failed"). It is permanent — the account / authorization-code
-// pair was rejected, so retrying the same credentials is futile. The wrapped
-// error names the auth account, since the message's from/to are irrelevant to
-// a credential rejection; callers match it with errors.Is to log the account
-// instead of the recipient.
-var ErrAuth = errors.New("smtp authentication failed")
+// Permanent failures (bad address, malformed message) return false, and so
+// does ErrAuth — see its doc comment for why that is not the same thing as
+// "do not retry an auth failure".
 
 func isTransient(err error) bool {
 	if err == nil {

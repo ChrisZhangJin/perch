@@ -2,6 +2,7 @@ package replier
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -142,7 +143,9 @@ func TestComposeFailurePrefixesSubject(t *testing.T) {
 type smtpStep struct {
 	ln       net.Listener
 	failData func(call int) bool // true => drop the conn after the DATA payload
+	failAuth func(call int) bool // true => answer this AUTH with 535, as 163 does
 	calls    int32
+	auths    int32
 	closed   atomic.Bool
 }
 
@@ -198,6 +201,10 @@ func (s *smtpStep) handle(t *testing.T, c net.Conn) {
 			writeLine("250-perch-test")
 			writeLine("250 OK")
 		case "AUTH":
+			if s.failAuth != nil && s.failAuth(int(atomic.AddInt32(&s.auths, 1))) {
+				writeLine("535 Error: authentication failed")
+				continue
+			}
 			writeLine("235 OK")
 		case "MAIL":
 			writeLine("250 OK")
@@ -291,7 +298,46 @@ func newReplierForFakeSMTP(fakeAddr string, maxAttempts int) *Replier {
 		smtpAddr:    fakeAddr,
 		MaxAttempts: maxAttempts,
 		retryDelay:  5 * time.Millisecond,
-		dial:        plaintextDialer(fakeAddr),
+		// Production defaults this to 5s (163's throttle window). Shrink it or
+		// the auth-retry test below sleeps for five real seconds.
+		authRetryDelay: 5 * time.Millisecond,
+		dial:           plaintextDialer(fakeAddr),
+	}
+}
+
+// TestReplyRetriesAuthRejection is the 2026-09-29 incident in miniature: 163
+// answered the first AUTH with `535 Error: authentication failed`, then
+// accepted the very same credentials on the next connection a second later.
+// perch treated 535 as permanent and dropped the reply on the floor. It must
+// now retry, on a longer backoff, and the reply must go out.
+func TestReplyRetriesAuthRejection(t *testing.T) {
+	srv := startSMTPStep(t, nil)
+	srv.failAuth = func(call int) bool { return call == 1 } // reject the first login only
+	defer srv.Close()
+
+	r := newReplierForFakeSMTP(srv.addr(), 3)
+
+	var attempts []int
+	r.SetHook(func(attempt int, _ error, _ int) { attempts = append(attempts, attempt) })
+
+	if err := r.Reply("alice@perch.test", "test", "<r@x>", nil, "hello", nil); err != nil {
+		t.Fatalf("a 535 on the first login must not lose the reply, got: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Errorf("hook fired %d times, want 2 (rejected login + successful retry)", len(attempts))
+	}
+	if got := atomic.LoadInt32(&srv.auths); got != 2 {
+		t.Errorf("server saw %d AUTH commands, want 2", got)
+	}
+	if got := atomic.LoadInt32(&srv.calls); got != 1 {
+		t.Errorf("server saw %d DATA calls, want 1 (only the retry gets that far)", got)
+	}
+	// An auth rejection must back off on authRetryDelay, not retryDelay.
+	if r.backoff(fmt.Errorf("%w: 535", ErrAuth)) != r.authRetryDelay {
+		t.Error("ErrAuth should pick the longer auth backoff")
+	}
+	if r.backoff(errors.New("smtp data write: broken pipe")) != r.retryDelay {
+		t.Error("a network blip should keep the ordinary backoff")
 	}
 }
 

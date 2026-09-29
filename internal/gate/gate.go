@@ -113,3 +113,19 @@ func (g *Gate) FirstSight(messageID string) bool {
 	g.seen[messageID] = true
 	return true
 }
+
+// ForgetSight drops messageID from the dedup set, so the next poll treats it
+// as first-sight again.
+//
+// It exists for exactly one caller: a reply that was composed successfully but
+// could not be handed to SMTP. The app leaves such a message unseen in INBOX
+// so a later poll can retry it — but FirstSight had already recorded the id, so
+// the retry was deduped away and the "leave unseen" path was a no-op forever:
+// the reply was lost and the mail sat unread until a human noticed. Observed
+// 2026-09-29 after a single 535 from 163. Dedup is still the default; this is
+// the deliberate, bounded exception (see App.replyFailures).
+func (g *Gate) ForgetSight(messageID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.seen, messageID)
+}

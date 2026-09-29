@@ -59,7 +59,22 @@ type App struct {
 	rate     *replyRate   // per-thread reply cap; see loopguard.go
 	hook     *hook.Runner // optional on-email script; nil when unconfigured
 	mu       sync.Mutex   // guards ProcessUnseen (defensive; app drives it serially)
+	// replyFailures counts consecutive SMTP failures per Message-ID, so the
+	// "leave it unseen and retry next poll" path is bounded instead of
+	// infinite. Cleared on success and on giving up. Only touched from
+	// ProcessUnseen, which holds mu for its whole body.
+	replyFailures map[string]int
+	// lastReplyAttempts is the attempt count of the most recent Reply, fed by
+	// the hook installed in New. The failure notice used to hardcode "3
+	// attempt(s)", which on 2026-09-29 told the sender (and the operator
+	// reading the mail) that perch had tried three times when the single 535
+	// had ended it after one. Same locking note as replyFailures.
+	lastReplyAttempts int
 }
+
+// maxReplyAttempts bounds how many polls may retry one message's reply before
+// perch gives up, notifies the sender and marks the mail seen.
+const maxReplyAttempts = 3
 
 // New wires an App. The optional on-email hook is built here from cfg rather
 // than passed in, so every construction path — production, --testmode, the
@@ -74,8 +89,16 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	if h != nil && log != nil {
 		log.Info("on-email hook enabled", "script", h.Path(), "timeout", h.Timeout())
 	}
-	return &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
-		triggers: triggers, rate: newReplyRate(time.Hour), hook: h}
+	a := &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
+		triggers: triggers, rate: newReplyRate(time.Hour), hook: h,
+		replyFailures: make(map[string]int)}
+	// Record how many SMTP attempts each Reply actually made, so the failure
+	// notice reports the truth. Optional, like FailureNotifier: senders that
+	// don't retry (testmode's InjectSender) simply don't implement it.
+	if ah, ok := rep.(AttemptHooker); ok {
+		ah.SetHook(func(attempt int, _ error, _ int) { a.lastReplyAttempts = attempt })
+	}
+	return a
 }
 
 // SessForTest returns the session registry wired into this App. Test-only;
@@ -425,10 +448,30 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply file collect failed", "err", err)
 		}
 		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), greeted, files); err != nil {
+			// The answer exists; only the handoff to SMTP failed. Retry it on
+			// a later poll — but that only works if we also drop the dedup
+			// record, or FirstSight bounces the message on the next fetch and
+			// the mail sits unseen in INBOX forever (2026-09-29, a 535 from
+			// 163). Bounded by maxReplyAttempts so a genuinely dead SMTP path
+			// does not re-run the agent on every poll for the rest of time.
+			n := a.replyFailures[m.MessageID] + 1
+			a.replyFailures[m.MessageID] = n
+			if n < maxReplyAttempts {
+				a.gate.ForgetSight(m.MessageID)
+				a.log.Warn("reply send failed; leaving unseen to retry on the next poll",
+					"to", m.From, "subject", m.Subject, "failures", n,
+					"max", maxReplyAttempts, "err", err)
+				continue
+			}
+			// Out of retries: tell the sender, and mark seen so the mail stops
+			// accumulating unseen in INBOX.
 			a.logSendFailure("reply failed", m, err)
 			a.notifyReplyFailure(m, out, files, err)
-			continue // leave unseen so a later poll retries the reply
+			delete(a.replyFailures, m.MessageID)
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
 		}
+		delete(a.replyFailures, m.MessageID) // sent; don't let the map grow
 		if len(files) > 0 {
 			_ = cleanReplyDir(rpDir)
 		}
@@ -446,6 +489,15 @@ type FailureNotifier interface {
 	NotifyFailure(to, subject, inReplyTo string, references []string, attempts int, lastErr error, msgSize int) error
 }
 
+// AttemptHooker is an optional extension of ReplySender: a sender that
+// retries internally can report how many attempts each Reply took, which is
+// what the failure notice quotes. Satisfied by *replier.Replier; senders that
+// never retry (testmode's InjectSender) leave it unimplemented and the notice
+// falls back to the configured maximum.
+type AttemptHooker interface {
+	SetHook(fn func(attempt int, err error, msgSize int))
+}
+
 // notifyReplyFailure sends the optional failure notification if the reply
 // sender implements it. Failure-to-notify is itself logged but never blocks
 // the loop — we've already exhausted retries on the real reply.
@@ -461,8 +513,14 @@ func (a *App) notifyReplyFailure(m *message.Message, body string, attachments []
 			msgSize += int(info.Size())
 		}
 	}
+	// The real attempt count, recorded by the hook installed in New. Zero
+	// means the sender doesn't report attempts at all, so quote the cap.
+	attempts := a.lastReplyAttempts
+	if attempts < 1 {
+		attempts = maxReplyAttempts
+	}
 	if err := n.NotifyFailure(m.From, m.Subject, m.MessageID,
-		appendRef(m.References, m.MessageID), 3, lastErr, msgSize); err != nil {
+		appendRef(m.References, m.MessageID), attempts, lastErr, msgSize); err != nil {
 		a.logSendFailure("failure notification send failed", m, err)
 	}
 }

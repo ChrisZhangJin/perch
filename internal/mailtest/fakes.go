@@ -63,6 +63,17 @@ func (f *FakeMailbox) MarkSeen(ctx context.Context, uid uint32) error {
 
 func (f *FakeMailbox) Close() error { return nil }
 
+// SeenUIDs returns every UID passed to MarkSeen, in append-order. Exported so
+// tests that wire a FakeMailbox into app.New directly (rather than through
+// Mailtest) can still assert what was marked seen.
+func (f *FakeMailbox) SeenUIDs() []uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uint32, len(f.seen))
+	copy(out, f.seen)
+	return out
+}
+
 // Reply captures one outbound reply recorded by FakeSender. Returned from
 // Mailtest.Replies. The body is the text the agent produced (post-greeting
 // scan when applicable), not the raw agent stdout.
