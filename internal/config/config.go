@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrisZhangJin/perch/internal/jev"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,6 +52,49 @@ type Config struct {
 	// off: every long-task ack costs an extra agent invocation per email,
 	// so opt-in only. See internal/app/classify.go for the contract.
 	LongTaskAck bool
+	// Classifier picks who answers the LongTaskAck duration probe:
+	//
+	//	"agent" — DEFAULT. Spawn the coding agent in a throwaway session and
+	//	          parse its sentinel line (internal/app/classify.go).
+	//	"jev"   — ask TypeSafe AI's System One model two typed questions over
+	//	          HTTP (internal/jev). One round trip instead of one agent
+	//	          invocation, which is the whole cost objection to LongTaskAck.
+	//
+	// "jev" degrades to "agent" on every failure — no key, transport error,
+	// timeout, unrecognised answer — so setting it can slow the probe down
+	// but can never stop the ack path working. Ignored when LongTaskAck is
+	// off, since nothing calls the classifier then.
+	Classifier string
+	// JevAPIKey authenticates to TypeSafe AI. Env-only (TYPESAFE_API_KEY):
+	// there is deliberately no YAML key, because perch.yaml is written by
+	// the setup wizard, is not gitignored, and operators copy it around.
+	// Empty means jev.New returns nil and the classifier stays on "agent".
+	JevAPIKey string
+	// JevAPIURL is the System One endpoint. Overridable only so tests can
+	// point at an httptest server; in production leave it alone.
+	JevAPIURL string
+	// JevModel is the pinned model version. Pinned, not "jev-latest": the
+	// alias moves under the prompt without warning. See internal/jev.
+	JevModel string
+	// JevTimeout bounds one classify call. Short (10s) on purpose — the
+	// probe runs inline while ProcessUnseen holds the app lock, so a slow
+	// call stalls every email behind it, and the agent fallback is the
+	// faster path by then.
+	JevTimeout time.Duration
+	// EndDetect asks Jev whether an inbound thread continuation is just a
+	// closing ("thanks, got it", "好的，谢谢") and, if so, leaves it
+	// unanswered instead of spending an agent run on it.
+	//
+	// Default off, and opt-in for a reason: a false positive silently drops
+	// a real request and nobody ever finds out, whereas a false negative
+	// only costs one unnecessary reply. Requires a key; inert without one.
+	// See internal/app/enddetect.go for the full set of guards.
+	EndDetect bool
+	// EndDetectMinProb is how sure Jev must be before perch stays silent —
+	// the calibrated probability of "the thread is over", not the vendor's
+	// `confidence` field and not merely "the model picked over". 0.9 by
+	// default because of the asymmetry above; lower it only with evidence.
+	EndDetectMinProb float64
 	// AgentTaskOnly injects a SAFETY PROTOCOL section into the agent prompt
 	// telling the agent to refuse destructive side-requests that aren't the
 	// email's stated task. Read-only inspection and any operation inside
@@ -135,6 +179,12 @@ type Config struct {
 	HookTimeout time.Duration
 }
 
+// Duration-probe backends. See Config.Classifier.
+const (
+	ClassifierAgent = "agent"
+	ClassifierJev   = "jev"
+)
+
 // Quoted-history strip modes. See Config.StripQuoted.
 const (
 	StripNever    = "never"
@@ -218,6 +268,14 @@ type yamlConfig struct {
 	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
 	LogLevel           string        `yaml:"log_level"`
 	LongTaskAck        bool          `yaml:"long_task_ack"`
+	Classifier         string        `yaml:"classifier"`
+	JevAPIURL          string        `yaml:"jev_api_url"`
+	JevModel           string        `yaml:"jev_model"`
+	JevTimeout         time.Duration `yaml:"jev_timeout"`
+	EndDetect          bool          `yaml:"end_detect"`
+	EndDetectMinProb   float64       `yaml:"end_detect_min_prob"`
+	// No jev_api_key here on purpose — the key is env-only
+	// (TYPESAFE_API_KEY). See Config.JevAPIKey.
 }
 
 // YAMLKeys returns every YAML key Load understands, nested keys in dotted
@@ -310,6 +368,11 @@ func Defaults() *Config {
 		SkipAutomated:      true,
 		MaxRepliesPerHour:  10,
 		HookTimeout:        30 * time.Second,
+		Classifier:         ClassifierAgent,
+		JevAPIURL:          jev.DefaultAPIURL,
+		JevModel:           jev.DefaultModel,
+		JevTimeout:         jev.DefaultTimeout,
+		EndDetectMinProb:   0.9,
 	}
 }
 
@@ -467,6 +530,47 @@ func applyYAML(c *Config, path string) error {
 	if y.LongTaskAck {
 		c.LongTaskAck = y.LongTaskAck
 	}
+	if v := strings.ToLower(strings.TrimSpace(y.Classifier)); v != "" {
+		switch v {
+		case ClassifierAgent, ClassifierJev:
+			c.Classifier = v
+		default:
+			slog.Warn("classifier must be agent or jev; using current value",
+				"value", y.Classifier, "using", c.Classifier)
+		}
+	}
+	if y.JevAPIURL != "" {
+		c.JevAPIURL = strings.TrimSpace(y.JevAPIURL)
+	}
+	if v := strings.TrimSpace(y.JevModel); v != "" {
+		// A moving alias is the one value that must not be honoured
+		// silently: it would swap the model out from under the rubric in
+		// internal/app/classify.go with no signal anywhere. See internal/jev.
+		if strings.EqualFold(v, "jev-latest") {
+			slog.Warn("jev_model must be a pinned version, not a moving alias; using current value",
+				"value", v, "using", c.JevModel)
+		} else {
+			c.JevModel = v
+		}
+	}
+	if y.JevTimeout > 0 {
+		c.JevTimeout = y.JevTimeout
+	}
+	if y.EndDetect {
+		c.EndDetect = y.EndDetect
+	}
+	// A threshold of 0 would mean "drop every continuation", which nobody
+	// can have meant, so a zero is read as unset rather than honoured —
+	// same treatment as max_replies_per_hour. Anything above 1 is
+	// unreachable and would silently disable the feature instead.
+	if y.EndDetectMinProb != 0 {
+		if y.EndDetectMinProb > 0 && y.EndDetectMinProb <= 1 {
+			c.EndDetectMinProb = y.EndDetectMinProb
+		} else {
+			slog.Warn("end_detect_min_prob must be in (0,1]; using current value",
+				"value", y.EndDetectMinProb, "using", c.EndDetectMinProb)
+		}
+	}
 	return nil
 }
 
@@ -588,6 +692,12 @@ func applyEnv(c *Config) {
 		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
 			c.LongTaskAck = b
 		}
+	}
+	// Env-only, no YAML counterpart: perch.yaml is wizard-written, not
+	// gitignored, and gets copied between machines. Secrets stay out of it,
+	// same rule as AGENT_AUTH_CODE. Never logged — not even its length.
+	if v := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")); v != "" {
+		c.JevAPIKey = v
 	}
 }
 

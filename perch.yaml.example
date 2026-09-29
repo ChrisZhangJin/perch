@@ -197,6 +197,34 @@ task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKI
 # every inbound triggers only one agent run unless you opt in.
 # Env override: LONG_TASK_ACK=true
 # long_task_ack: false
+#
+# classifier: who answers that "will this run long?" question.
+#   agent — DEFAULT. Spawns the coding agent in a throwaway session; costs a
+#           full extra agent run per inbound email.
+#   jev   — asks TypeSafe AI's System One model (api.typesafe.ai) two typed
+#           questions over HTTP instead. One round trip, ~100-500ms, which is
+#           the whole cost objection to long_task_ack.
+# The API key is env-only and never read from this file: export
+# TYPESAFE_API_KEY. Without it (or on any error, timeout or unexpected
+# answer) perch silently falls back to the agent probe, so switching this to
+# jev can never stop the ack path working.
+# classifier: agent
+# jev_api_url: https://api.typesafe.ai/v1/systemone
+# jev_model: jev-1.13.0    # pin a version; the "jev-latest" alias is refused
+# jev_timeout: 10s         # short: the probe blocks the mail queue behind it
+#
+# end_detect: use Jev to spot a thread that is over — "thanks, got it", "ok
+# 👍", "好的，谢谢" — and leave it unanswered instead of spending an agent run
+# on a reply nobody wanted, which also invites a politeness ping-pong. Needs
+# TYPESAFE_API_KEY; works independently of classifier above. Only ever applies
+# to replies within an existing thread, never to a new email.
+#
+# end_detect_min_prob: how sure Jev must be before perch stays quiet. Set high
+# on purpose — answering a "thanks" wastes one agent run, but wrongly staying
+# quiet silently drops a real request and nobody ever finds out. Any error,
+# timeout or unexpected answer means "reply as usual".
+# end_detect: false
+# end_detect_min_prob: 0.9
 
 # --- Hooks -----------------------------------------------------------------
 # on_email: a script perch runs for every inbound email it ACCEPTS, just

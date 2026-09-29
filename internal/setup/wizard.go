@@ -319,6 +319,26 @@ func persist(cfg *config.Config) error {
 	if cfg.HookTimeout <= 0 {
 		cfg.HookTimeout = def.HookTimeout
 	}
+	// The classifier knobs all have non-zero defaults, and an empty value
+	// here would persist `classifier:` with no value — which config.Load
+	// then reads as "unset" forever. Same treatment as the timeouts above.
+	if cfg.Classifier == "" {
+		cfg.Classifier = def.Classifier
+	}
+	if cfg.JevAPIURL == "" {
+		cfg.JevAPIURL = def.JevAPIURL
+	}
+	if cfg.JevModel == "" {
+		cfg.JevModel = def.JevModel
+	}
+	if cfg.JevTimeout <= 0 {
+		cfg.JevTimeout = def.JevTimeout
+	}
+	// A zero threshold would read as "drop every thread continuation", so
+	// it is treated as unset rather than written out verbatim.
+	if cfg.EndDetectMinProb <= 0 || cfg.EndDetectMinProb > 1 {
+		cfg.EndDetectMinProb = def.EndDetectMinProb
+	}
 
 	body := "# perch configuration (written by setup wizard).\n" +
 		"# Secrets live in env vars, not here: AGENT_AUTH_CODE.\n" +
@@ -408,7 +428,29 @@ func persist(cfg *config.Config) error {
 		"# If the classifier says \"long\", perch sends an interim ack email so\n" +
 		"# you know the request landed while the real reply is still cooking.\n" +
 		"# Off by default — enabling it costs one extra agent run per inbound.\n" +
-		"long_task_ack: " + strconv.FormatBool(cfg.LongTaskAck) + "   # LONG_TASK_ACK\n\n" +
+		"long_task_ack: " + strconv.FormatBool(cfg.LongTaskAck) + "   # LONG_TASK_ACK\n" +
+		"# classifier: who answers that question.\n" +
+		"#   agent — DEFAULT. Spawns the coding agent in a throwaway session;\n" +
+		"#           costs a full extra agent run per inbound email.\n" +
+		"#   jev   — asks TypeSafe AI's System One model two typed questions\n" +
+		"#           over HTTP instead: one round trip, no agent run.\n" +
+		"# The key is env-only and never written here: export TYPESAFE_API_KEY.\n" +
+		"# Without it — or on any error, timeout or unexpected answer — perch\n" +
+		"# falls back to the agent probe, so jev can never break the ack path.\n" +
+		"classifier: " + cfg.Classifier + "\n" +
+		"jev_api_url: " + cfg.JevAPIURL + "\n" +
+		"jev_model: " + cfg.JevModel + "   # pin a version; \"jev-latest\" is refused\n" +
+		"jev_timeout: " + cfg.JevTimeout.String() + "   # short: the probe blocks the mail queue\n" +
+		"# end_detect: use Jev to spot a thread that is over — \"thanks, got\n" +
+		"# it\", \"ok\", \"好的，谢谢\" — and leave it unanswered instead of\n" +
+		"# spending an agent run on a reply nobody wanted. Also needs\n" +
+		"# TYPESAFE_API_KEY; works independently of classifier above.\n" +
+		"# Only ever applies to replies within a thread, never to a new email.\n" +
+		"# end_detect_min_prob: how sure Jev must be before perch stays quiet.\n" +
+		"# High on purpose: answering a \"thanks\" wastes one agent run, but\n" +
+		"# wrongly staying quiet drops a real request and nobody finds out.\n" +
+		"end_detect: " + strconv.FormatBool(cfg.EndDetect) + "\n" +
+		"end_detect_min_prob: " + strconv.FormatFloat(cfg.EndDetectMinProb, 'g', -1, 64) + "\n\n" +
 		"# --- Hooks ---\n" +
 		"# on_email: a script perch runs for every inbound email it ACCEPTS,\n" +
 		"# just before the agent runs. Called with five positional arguments:\n" +

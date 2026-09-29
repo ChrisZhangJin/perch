@@ -17,6 +17,7 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/config"
 	"github.com/ChrisZhangJin/perch/internal/gate"
 	"github.com/ChrisZhangJin/perch/internal/hook"
+	"github.com/ChrisZhangJin/perch/internal/jev"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/message"
 	"github.com/ChrisZhangJin/perch/internal/replier"
@@ -58,6 +59,7 @@ type App struct {
 	triggers []mailbox.Trigger
 	rate     *replyRate   // per-thread reply cap; see loopguard.go
 	hook     *hook.Runner // optional on-email script; nil when unconfigured
+	jev      *jev.Client  // optional duration classifier; nil unless configured
 	mu       sync.Mutex   // guards ProcessUnseen (defensive; app drives it serially)
 	// replyFailures counts consecutive SMTP failures per Message-ID, so the
 	// "leave it unseen and retry next poll" path is bounded instead of
@@ -89,8 +91,23 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	if h != nil && log != nil {
 		log.Info("on-email hook enabled", "script", h.Path(), "timeout", h.Timeout())
 	}
+	// Duration classifier. Built here from cfg for the same reason the hook
+	// is: every construction path gets identical behaviour with no
+	// call-site change. jev.New returns nil without a key, and a nil client
+	// means the agent probe — so "not configured" needs no branch beyond
+	// the one in classifyTask.
+	var jc *jev.Client
+	if cfg.Classifier == config.ClassifierJev || cfg.EndDetect {
+		if jc = jev.New(cfg.JevAPIKey, cfg.JevAPIURL, cfg.JevModel, cfg.JevTimeout); jc != nil && log != nil {
+			log.Info("jev enabled", "model", jc.Model(), "timeout", cfg.JevTimeout,
+				"classifier", cfg.Classifier == config.ClassifierJev, "end_detect", cfg.EndDetect)
+		} else if log != nil {
+			log.Warn("jev is enabled but TYPESAFE_API_KEY is unset; " +
+				"the duration probe falls back to the agent and end-detection is inert")
+		}
+	}
 	a := &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
-		triggers: triggers, rate: newReplyRate(time.Hour), hook: h,
+		triggers: triggers, rate: newReplyRate(time.Hour), hook: h, jev: jc,
 		replyFailures: make(map[string]int)}
 	// Record how many SMTP attempts each Reply actually made, so the failure
 	// notice reports the truth. Optional, like FailureNotifier: senders that
@@ -246,6 +263,23 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				"from", m.From, "subject", m.Subject, "err", err)
 		}
 
+		// End-of-conversation check (opt-in, cfg.EndDetect). Placed here —
+		// after the whitelist and the loop guards, after the hook has
+		// recorded the mail, before attachments are staged and before any
+		// agent work — so a "thanks, got it" costs one Jev call instead of
+		// an agent run, while an operator's recording hook still sees every
+		// email it saw before.
+		//
+		// The session is deliberately left untouched: a later message in
+		// this thread must still resume where the agent left off. Note the
+		// reply-rate slot was already consumed by rate.Allow above; not
+		// refunding it is the conservative reading and keeps the loop guard
+		// the single authority on its own counters.
+		if a.conversationEnded(ctx, m) {
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
+		}
+
 		// Inbound attachments: persist so the agent can read them with its
 		// file tools. Failure is non-fatal — the task still runs on the body.
 		saved, err := saveAttachments(a.cfg.AgentWorkdir, m)
@@ -259,37 +293,21 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
 
-		// Duration probe: when cfg.LongTaskAck is on, ask the agent (in a
-		// throwaway, fresh session) whether this task will run long. If long,
-		// send an interim ack email so the human isn't left wondering while
-		// the real run works. Classifier errors are logged and swallowed — a
-		// bad probe must never block the real reply.
+		// Duration probe: when cfg.LongTaskAck is on, ask whether this task
+		// will run long. If long, send an interim ack email so the human
+		// isn't left wondering while the real run works. Probe failures are
+		// logged and swallowed — a bad probe must never block the real reply.
 		//
-		// The probe uses IsNew=true with sessionID="" so it never pollutes the
-		// thread's actual session; agents that persist state (nanopi) will
-		// mint a throwaway session id we deliberately drop on the floor.
-		//
-		// Off by default: the probe costs one extra agent invocation per
-		// email, so opt-in only. See config.LongTaskAck.
+		// Off by default. See config.LongTaskAck and classifyTask.
 		if a.cfg.LongTaskAck {
-			classifyPrompt := BuildClassifyPrompt(m.From, m.Subject, m.Body)
-			classifyOut, _, cerr := a.run.Run(ctx, classifyPrompt, "", true)
-			if cerr != nil {
-				a.log.Warn("classifier run failed; skipping ack path",
-					"from", m.From, "err", cerr)
-			} else {
-				runtime, etaMin := ParseClassifyOutput(classifyOut)
-				a.log.Info("task classified",
-					"from", m.From, "runtime", runtime, "eta_min", etaMin)
-				if runtime == "long" {
-					ack := BuildLongAckBody(m.FromName,
-						runner.AgentDisplayName(a.cfg.Email), etaMin,
-						looksChinese(failureLanguageSample(m.Subject, m.Body)))
-					if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
-						appendRef(m.References, m.MessageID), ack, nil); err != nil {
-						a.log.Warn("long-task ack send failed; continuing to run task",
-							"from", m.From, "err", err)
-					}
+			if runtime, etaMin, ok := a.classifyTask(ctx, m); ok && runtime == "long" {
+				ack := BuildLongAckBody(m.FromName,
+					runner.AgentDisplayName(a.cfg.Email), etaMin,
+					looksChinese(failureLanguageSample(m.Subject, m.Body)))
+				if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
+					appendRef(m.References, m.MessageID), ack, nil); err != nil {
+					a.log.Warn("long-task ack send failed; continuing to run task",
+						"from", m.From, "err", err)
 				}
 			}
 		}
