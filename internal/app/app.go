@@ -98,7 +98,7 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	// the one in classifyTask.
 	var jc *jev.Client
 	if cfg.Classifier == config.ClassifierJev || cfg.EndDetect {
-		if jc = jev.New(cfg.JevAPIKey, cfg.JevAPIURL, cfg.JevModel, cfg.JevTimeout); jc != nil && log != nil {
+		if jc = jev.New(cfg.JevAPIKey, cfg.JevAPIURL, cfg.JevModel, cfg.JevTimeout, log); jc != nil && log != nil {
 			log.Info("jev enabled", "model", jc.Model(), "timeout", cfg.JevTimeout,
 				"classifier", cfg.Classifier == config.ClassifierJev, "end_detect", cfg.EndDetect)
 		} else if log != nil {
@@ -226,6 +226,37 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				continue
 			}
 		}
+		// Cc-only mail. Being copied is how a human says "for your
+		// awareness" — the request is someone else's, and answering it is
+		// both noise and a way to end up doing another agent's work.
+		//
+		// Checked here, before rate.Allow and before the on-email hook,
+		// because "ignored" has to mean ignored: a mail we never accepted
+		// must not consume one of the thread's hourly reply slots, and the
+		// hook's contract is that it sees mail perch ACCEPTS.
+		//
+		// Absent from both lists is NOT cc-only: Bcc, a mailing list, and
+		// most forwarding setups all deliver with perch's address in
+		// neither header, and those are ordinary mail addressed to us. Only
+		// an explicit "you are in Cc, someone else is in To" is ignored,
+		// which also means a missing/unparseable To header fails open.
+		role := recipientRole(m, a.cfg.Email)
+		// One line per email naming which of the four shapes it was. The
+		// addresses themselves stay at DEBUG: the counts are what a reader
+		// scanning for "why was that ignored?" needs, and echoing every
+		// recipient of every email is how a log stops being read at all.
+		a.log.Info("recipients decision", "role", role,
+			"to_count", len(m.To), "cc_count", len(m.Cc),
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
+		a.log.Debug("recipients", "role", role, "to", strings.Join(m.To, ","),
+			"cc", strings.Join(m.Cc, ","), "self", a.cfg.Email,
+			"message_id", m.MessageID)
+		if role == roleCcOnly {
+			a.log.Info("cc only; ignoring", "from", m.From, "subject", m.Subject,
+				"message_id", m.MessageID)
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
+		}
 		if ok, n := a.rate.Allow(m.ThreadRoot(), a.cfg.MaxRepliesPerHour); !ok {
 			a.log.Warn("thread reply cap reached; not replying (loop guard)",
 				"from", m.From, "subject", m.Subject, "thread", m.ThreadRoot(),
@@ -344,6 +375,8 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				a.cfg.Email, a.cfg.AgentWorkdir, runner.PromptOpts{
 					TaskOnly:  a.cfg.AgentTaskOnly,
 					Contracts: a.cfg.ContractsFor(cold),
+					To:        m.To,
+					Cc:        m.Cc,
 				})
 		}
 
@@ -791,4 +824,33 @@ func cleanReplyDir(dir string) error {
 		}
 	}
 	return nil
+}
+
+// Recipient roles, as reported on the "recipients decision" log line. Named
+// constants rather than bare strings because the log is the only place the
+// cc-only rule is visible — an operator whose mail went unanswered searches
+// for the role, so the four values have to be stable.
+const (
+	roleSoleTo      = "sole_to"        // the only address in To: ordinary mail
+	roleToWithOther = "to_with_others" // in To alongside others: process, but scoped
+	roleCcOnly      = "cc_only"        // copied, not addressed: ignored entirely
+	roleBccOrList   = "bcc_or_list"    // in neither header: Bcc, list, forward
+)
+
+// recipientRole classifies where the agent's own address appears in an
+// email's To/Cc. selfAddr is cfg.Email; an empty one (or an unparseable To)
+// can only yield bcc_or_list, which is the fail-open direction — perch that
+// does not know its own address must not start ignoring mail.
+func recipientRole(m *message.Message, selfAddr string) string {
+	inTo := message.HasRecipient(m.To, selfAddr)
+	switch {
+	case inTo && len(m.To) == 1 && len(m.Cc) == 0:
+		return roleSoleTo
+	case inTo:
+		return roleToWithOther
+	case len(m.To) > 0 && message.HasRecipient(m.Cc, selfAddr):
+		return roleCcOnly
+	default:
+		return roleBccOrList
+	}
 }

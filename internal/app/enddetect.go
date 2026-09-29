@@ -113,7 +113,18 @@ func ParseEndDetect(ans map[string]jev.Answer) (probOver float64, err error) {
 // conversationEnded reports whether this message closes its thread and can
 // be left unanswered. False for every uncertain case; see the file comment.
 func (a *App) conversationEnded(ctx context.Context, m *message.Message) bool {
-	if !a.cfg.EndDetect || a.jev == nil {
+	// The "didn't run" reasons are logged at DEBUG, not INFO: two of the
+	// three are the steady state (feature off, or every thread root), and
+	// an INFO line per email saying "the disabled feature stayed disabled"
+	// is the chatter that makes operators stop reading logs.
+	if !a.cfg.EndDetect {
+		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "disabled",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
+		return false
+	}
+	if a.jev == nil {
+		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "no_client",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 		return false
 	}
 	// Thread continuations only. A brand-new email is always processed: a
@@ -121,6 +132,8 @@ func (a *App) conversationEnded(ctx context.Context, m *message.Message) bool {
 	// to be a terse request ("ok, do the migration") than a goodbye, and
 	// there is no prior turn for "thanks" to be thanking.
 	if m.InReplyTo == "" && len(m.References) == 0 {
+		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "thread_root",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 		return false
 	}
 
@@ -133,22 +146,26 @@ func (a *App) conversationEnded(ctx context.Context, m *message.Message) bool {
 	body = message.TruncateUTF8(body, endDetectMaxBytes)
 
 	state, questions := BuildEndDetect(m.Subject, body)
-	ans, err := a.jev.Ask(ctx, state, questions)
+	ans, err := a.jev.Ask(ctx, "end_detect", state, questions)
 	if err == nil {
 		var prob float64
 		if prob, err = ParseEndDetect(ans); err == nil {
-			if prob >= a.cfg.EndDetectMinProb {
-				a.log.Info("conversation ended; not replying",
-					"from", m.From, "subject", m.Subject, "prob", prob,
-					"threshold", a.cfg.EndDetectMinProb)
-				return true
+			// One line either way, carrying both numbers that produced the
+			// verdict — and only one line: a skip is invisible downstream
+			// (no reply, no agent run, nothing else logs), so this is the
+			// sole record that an email was deliberately left unanswered.
+			outcome, ended := "processed", prob >= a.cfg.EndDetectMinProb
+			if ended {
+				outcome = "skipped"
 			}
-			a.log.Debug("end-of-conversation check: replying",
-				"from", m.From, "prob", prob, "threshold", a.cfg.EndDetectMinProb)
-			return false
+			a.log.Info("end_detect outcome", "outcome", outcome, "prob_over", prob,
+				"threshold", a.cfg.EndDetectMinProb, "from", m.From,
+				"subject", m.Subject, "message_id", m.MessageID)
+			return ended
 		}
 	}
-	a.log.Warn("end-of-conversation check failed; processing normally",
-		"from", m.From, "subject", m.Subject, "err", err)
+	a.log.Warn("end_detect failed; processing normally",
+		"outcome", "processed", "reason", "error",
+		"from", m.From, "subject", m.Subject, "message_id", m.MessageID, "err", err)
 	return false
 }

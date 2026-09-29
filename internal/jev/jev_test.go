@@ -1,10 +1,12 @@
 package jev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,7 +44,7 @@ func TestAskDecodesAnswers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New("secret-key", srv.URL, "", 0)
+	c := New("secret-key", srv.URL, "", 0, nil)
 	if c == nil {
 		t.Fatal("New returned nil for a non-empty key")
 	}
@@ -50,7 +52,7 @@ func TestAskDecodesAnswers(t *testing.T) {
 		t.Errorf("empty model should fall back to the pinned default, got %q", c.Model())
 	}
 
-	ans, err := c.Ask(context.Background(), map[string]any{"task": "x"}, testQuestions())
+	ans, err := c.Ask(context.Background(), "classify", map[string]any{"task": "x"}, testQuestions())
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
@@ -112,7 +114,7 @@ func TestAskRetriesRateLimit(t *testing.T) {
 	defer srv.Close()
 
 	start := time.Now()
-	ans, err := New("k", srv.URL, "", 0).Ask(context.Background(), nil, testQuestions())
+	ans, err := New("k", srv.URL, "", 0, nil).Ask(context.Background(), "classify", nil, testQuestions())
 	if err != nil {
 		t.Fatalf("a 429 followed by a 200 should succeed, got %v", err)
 	}
@@ -127,10 +129,16 @@ func TestAskRetriesRateLimit(t *testing.T) {
 	}
 }
 
+// debugLogger returns a logger at DEBUG (the chattiest setting, so every
+// log path this package has is exercised) writing into buf.
+func debugLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
 // TestAuthIsTerminalAndNeverLeaksKey covers both halves of the 401 contract:
 // a bad key is not retried (retrying just burns the rate limit on a request
-// that cannot succeed), and the key never reaches the error string. perch
-// logs these errors, and logs get pasted into issues.
+// that cannot succeed), and the key never reaches the error string or any
+// log line. perch logs these errors, and logs get pasted into issues.
 func TestAuthIsTerminalAndNeverLeaksKey(t *testing.T) {
 	const key = "sk-super-secret-value"
 	var calls int
@@ -141,7 +149,9 @@ func TestAuthIsTerminalAndNeverLeaksKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(key, srv.URL, DefaultModel, 0).Ask(context.Background(), nil, testQuestions())
+	var logs bytes.Buffer
+	_, err := New(key, srv.URL, DefaultModel, 0, debugLogger(&logs)).
+		Ask(context.Background(), "classify", nil, testQuestions())
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("err = %v, want ErrAuth", err)
 	}
@@ -151,15 +161,102 @@ func TestAuthIsTerminalAndNeverLeaksKey(t *testing.T) {
 	if strings.Contains(err.Error(), key) {
 		t.Error("the API key leaked into the error string")
 	}
+	if logs.Len() == 0 {
+		t.Fatal("a failed call logged nothing")
+	}
+	if strings.Contains(logs.String(), key) {
+		t.Errorf("the API key leaked into the logs:\n%s", logs.String())
+	}
+	// The WARN has to name the status, or the line is useless for
+	// telling "wrong key" apart from "server down".
+	if !strings.Contains(logs.String(), "jev call failed") ||
+		!strings.Contains(logs.String(), "status=401") {
+		t.Errorf("failure log is missing the status:\n%s", logs.String())
+	}
+}
+
+// TestSuccessLogsDecisionAndNeverLeaksKey is the success-path half of the
+// redaction contract: the happy path logs the most (request state, raw
+// response, per-answer decisions), so it is where a key would most easily
+// end up. It also pins the shape of the two INFO lines an operator reads.
+func TestSuccessLogsDecisionAndNeverLeaksKey(t *testing.T) {
+	const key = "sk-another-secret-value"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{
+			"answers": {
+				"runtime": {"type":"choice","choice":"long",
+					"probabilities":{"long":0.92,"short":0.08},"confidence":0.84},
+				"eta": {"type":"score","score":3.99,"legend":{"4":"an hour or more"}}
+			},
+			"model":"jev-1.13.0",
+			"usage":{"input_tokens":420,"output_tokens":7}
+		}`)
+	}))
+	defer srv.Close()
+
+	var logs bytes.Buffer
+	_, err := New(key, srv.URL, "", 0, debugLogger(&logs)).
+		Ask(context.Background(), "classify", map[string]any{"task": "migrate everything"}, testQuestions())
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	out := logs.String()
+	if strings.Contains(out, key) {
+		t.Errorf("the API key leaked into the logs:\n%s", out)
+	}
+	if strings.Contains(strings.ToLower(out), "authorization") ||
+		strings.Contains(out, "Bearer") {
+		t.Errorf("the Authorization header reached the logs:\n%s", out)
+	}
+	for _, want := range []string{
+		`msg="jev call"`, "purpose=classify", "status=200", "latency_ms=",
+		"attempts=1", "retries=0", "input_tokens=420", "output_tokens=7",
+		`msg="jev answer"`, "choice=long", "prob=0.92",
+		// Confidence must arrive labelled. It is 2*maxProb-1 (0.84 for this
+		// 0.92 answer) and the label is the only thing standing between a
+		// future reader and a threshold on it.
+		"vendor_confidence_not_a_probability=0.84",
+		"probabilities=", "score=3.99", "an hour or more",
+		// The state is DEBUG-only and truncated; the question wording is
+		// perch's own, so only the keys are logged.
+		`msg="jev request"`, "migrate everything",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestDebugStateIsTruncated: the logged state is an inbound email body, so
+// a long one must not be mirrored into the log file in full.
+func TestDebugStateIsTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"answers":{"runtime":{"type":"choice","choice":"short"}}}`)
+	}))
+	defer srv.Close()
+
+	var logs bytes.Buffer
+	body := strings.Repeat("x", 4000)
+	_, err := New("k", srv.URL, "", 0, debugLogger(&logs)).
+		Ask(context.Background(), "end_detect", map[string]any{"body": body}, testQuestions())
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if strings.Contains(logs.String(), body) {
+		t.Error("the full state was logged; it must be truncated")
+	}
+	if !strings.Contains(logs.String(), "truncated") {
+		t.Errorf("truncation is not marked in the log:\n%s", logs.String())
+	}
 }
 
 func TestNewWithoutKeyIsNil(t *testing.T) {
 	// The nil client IS the feature flag; callers branch on it once.
-	if c := New("  ", "", "", 0); c != nil {
+	if c := New("  ", "", "", 0, nil); c != nil {
 		t.Fatal("New with a blank key should return nil")
 	}
 	var c *Client
-	if _, err := c.Ask(context.Background(), nil, testQuestions()); !errors.Is(err, ErrNoClient) {
+	if _, err := c.Ask(context.Background(), "classify", nil, testQuestions()); !errors.Is(err, ErrNoClient) {
 		t.Errorf("nil client Ask = %v, want ErrNoClient", err)
 	}
 	if c.Model() != "" {

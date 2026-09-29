@@ -30,8 +30,12 @@
 //     moves under your prompts and thresholds with no warning, so perch
 //     never sends it.
 //
-// The package logs nothing. Errors quote the HTTP status and a truncated
-// response body; the API key appears in neither (see TestErrorsNeverLeakKey).
+// Logging: one INFO "jev call" per Ask (status, latency, attempts, tokens)
+// and one INFO "jev answer" per decoded answer; request and raw response
+// bodies at DEBUG; failures at WARN. The API key is never an attribute and
+// never appears in an error — the Authorization header is set on the
+// request and read nowhere else (see TestAuthIsTerminalAndNeverLeaksKey,
+// which greps every emitted log line as well as the error).
 package jev
 
 import (
@@ -41,10 +45,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -67,8 +74,16 @@ const (
 	retryBase = time.Second
 	// maxErrBody caps how much of a failing response is quoted into the
 	// error. Enough to identify the problem, short enough not to dump a
-	// vendor HTML error page into the log.
+	// vendor HTML error page into the log. The same cap bounds the raw
+	// body logged at DEBUG — the response is never read past it.
 	maxErrBody = 4096
+	// maxLogLegend caps the rubric label shown on a score answer's log
+	// line: enough to name the band, not the whole sentence.
+	maxLogLegend = 40
+	// maxLogState caps the request state echoed at DEBUG. The state is an
+	// inbound email body: useful to see which mail produced a verdict,
+	// ruinous to mirror in full into the log file.
+	maxLogState = 500
 )
 
 // Question types. Choice picks one named option, Score grades against an
@@ -161,16 +176,20 @@ type Client struct {
 	key   string
 	model string
 	hc    *http.Client
+	// log may be nil; every logging call here tolerates that, so tests and
+	// throwaway callers need not build a logger.
+	log *slog.Logger
 }
 
 // New returns a client, or nil when apiKey is empty.
 //
 // The nil return is the feature flag: "Jev is not configured" needs no
 // separate boolean, and every method here is nil-safe, so callers branch
-// once at the call site and nowhere else. Same shape as hook.New.
+// once at the call site and nowhere else. Same shape as hook.New, which
+// also takes the logger here rather than per call.
 //
 // Empty apiURL / model / timeout fall back to the Default* constants.
-func New(apiKey, apiURL, model string, timeout time.Duration) *Client {
+func New(apiKey, apiURL, model string, timeout time.Duration, log *slog.Logger) *Client {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return nil
@@ -189,6 +208,7 @@ func New(apiKey, apiURL, model string, timeout time.Duration) *Client {
 		key:   apiKey,
 		model: model,
 		hc:    &http.Client{Timeout: timeout},
+		log:   log,
 	}
 }
 
@@ -201,12 +221,14 @@ func (c *Client) Model() string {
 }
 
 // Ask sends state plus questions and returns one Answer per question key.
+// purpose names the caller ("classify", "end_detect") and appears on every
+// log line so a log reader can tell two concurrent probes apart.
 //
 // 429 and 529 are retried with exponential backoff, honouring a Retry-After
 // header when the server sends one. Every other non-2xx fails immediately:
 // a 401 or a 422 will fail identically on the next attempt and the caller
 // has a fallback path that is cheaper than waiting.
-func (c *Client) Ask(ctx context.Context, state any, questions map[string]Question) (map[string]Answer, error) {
+func (c *Client) Ask(ctx context.Context, purpose string, state any, questions map[string]Question) (map[string]Answer, error) {
 	if c == nil {
 		return nil, ErrNoClient
 	}
@@ -217,7 +239,12 @@ func (c *Client) Ask(ctx context.Context, state any, questions map[string]Questi
 	if err != nil {
 		return nil, fmt.Errorf("jev: encode request: %w", err)
 	}
+	c.logRequest(purpose, state, questions)
 
+	// Latency is measured across the whole Ask, backoff included: that is
+	// the number that matters to the caller, which is holding the app lock
+	// for the duration.
+	start := time.Now()
 	var lastErr error
 	wait := time.Duration(0)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -231,27 +258,43 @@ func (c *Client) Ask(ctx context.Context, state any, questions map[string]Questi
 			case <-time.After(wait):
 			}
 		}
-		answers, retryIn, err := c.post(ctx, payload)
-		if err == nil {
-			return answers, nil
+		res := c.post(ctx, payload)
+		if res.err == nil {
+			c.logCall(purpose, res, attempt+1, time.Since(start))
+			c.logAnswers(purpose, res.answers)
+			return res.answers, nil
 		}
-		lastErr = err
-		if retryIn == nil {
-			return nil, err // terminal: 401, 422, bad JSON, transport
+		lastErr = res.err
+		c.logFailure(purpose, res, attempt+1, time.Since(start))
+		if res.retryIn == nil {
+			return nil, res.err // terminal: 401, 422, bad JSON, transport
 		}
-		wait = *retryIn
+		wait = *res.retryIn
 	}
 	return nil, fmt.Errorf("%w after %d attempts: %v", ErrOverloaded, maxRetries+1, lastErr)
 }
 
-// post makes one attempt. A non-nil second return means "retryable"; its
+// result is one attempt's outcome. retryIn non-nil means "retryable"; its
 // value is the server-requested delay, or 0 for "use the caller's backoff".
-func (c *Client) post(ctx context.Context, payload []byte) (map[string]Answer, *time.Duration, error) {
+// status is 0 when the request never reached a response (transport error).
+type result struct {
+	answers map[string]Answer
+	usage   *Usage
+	status  int
+	body    []byte
+	retryIn *time.Duration
+	err     error
+}
+
+// post makes one attempt.
+func (c *Client) post(ctx context.Context, payload []byte) result {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, nil, fmt.Errorf("jev: build request: %w", err)
+		return result{err: fmt.Errorf("jev: build request: %w", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// The only place the key is ever used. It is deliberately not held in
+	// any variable that a log or error path can reach.
 	req.Header.Set("Authorization", "Bearer "+c.key)
 
 	resp, err := c.hc.Do(req)
@@ -259,32 +302,195 @@ func (c *Client) post(ctx context.Context, payload []byte) (map[string]Answer, *
 		// Transport-level failures (DNS, TLS, timeout) are not retried here:
 		// the caller's fallback is an agent run that will succeed, and a
 		// second dial costs the mail queue another timeout.
-		return nil, nil, fmt.Errorf("jev: request failed: %w", err)
+		//
+		// url.Error quotes the request URL, never the headers, so this
+		// wrapping cannot carry the key.
+		return result{err: fmt.Errorf("jev: request failed: %w", err)}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+	r := result{status: resp.StatusCode, body: body}
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
 	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, nil, fmt.Errorf("%w (401): %s", ErrAuth, snippet(body))
+		r.err = fmt.Errorf("%w (401): %s", ErrAuth, snippet(body))
+		return r
 	case resp.StatusCode == http.StatusUnprocessableEntity:
-		return nil, nil, fmt.Errorf("%w (422): %s", ErrValidation, snippet(body))
+		r.err = fmt.Errorf("%w (422): %s", ErrValidation, snippet(body))
+		return r
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 529:
 		d := retryAfter(resp.Header.Get("Retry-After"))
-		return nil, &d, fmt.Errorf("jev: %d: %s", resp.StatusCode, snippet(body))
+		r.retryIn, r.err = &d, fmt.Errorf("jev: %d: %s", resp.StatusCode, snippet(body))
+		return r
 	default:
-		return nil, nil, fmt.Errorf("jev: unexpected status %d: %s", resp.StatusCode, snippet(body))
+		r.err = fmt.Errorf("jev: unexpected status %d: %s", resp.StatusCode, snippet(body))
+		return r
 	}
 
 	var out response
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, nil, fmt.Errorf("jev: decode response: %w", err)
+		r.err = fmt.Errorf("jev: decode response: %w", err)
+		return r
 	}
 	if len(out.Answers) == 0 {
-		return nil, nil, errors.New("jev: response carried no answers")
+		r.err = errors.New("jev: response carried no answers")
+		return r
 	}
-	return out.Answers, nil, nil
+	r.answers, r.usage = out.Answers, out.Usage
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// Logging
+//
+// Shape: one "jev call" line per Ask with the transport facts, one "jev
+// answer" line per decoded answer with the meaning. Both at INFO, because
+// an operator who turned the classifier on wants to see what it decided
+// without switching to DEBUG; the raw bodies, which are large and contain
+// the sender's email, stay at DEBUG.
+//
+// Every helper tolerates a nil client and a nil logger.
+// ---------------------------------------------------------------------------
+
+func (c *Client) logger() *slog.Logger {
+	if c == nil {
+		return nil
+	}
+	return c.log
+}
+
+// logRequest echoes the outgoing call at DEBUG. The state is truncated
+// (maxLogState) because it is an email body; the questions are perch's own
+// fixed wording, so only their keys are worth a line.
+func (c *Client) logRequest(purpose string, state any, questions map[string]Question) {
+	log := c.logger()
+	if log == nil || !log.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		b = []byte(fmt.Sprintf("(unmarshalable state: %v)", err))
+	}
+	log.Debug("jev request", "purpose", purpose, "model", c.model,
+		"questions", strings.Join(sortedKeys(questions), ","),
+		"state", truncate(string(b), maxLogState))
+}
+
+// logCall is the one line that always exists for a successful Ask.
+func (c *Client) logCall(purpose string, r result, attempts int, took time.Duration) {
+	log := c.logger()
+	if log == nil {
+		return
+	}
+	in, out := 0, 0
+	if r.usage != nil {
+		in, out = r.usage.InputTokens, r.usage.OutputTokens
+	}
+	log.Info("jev call", "purpose", purpose, "model", c.model, "status", r.status,
+		"latency_ms", took.Milliseconds(), "attempts", attempts, "retries", attempts-1,
+		"input_tokens", in, "output_tokens", out)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("jev response", "purpose", purpose, "body", snippet(r.body))
+	}
+}
+
+// logAnswers renders one line per decoded answer.
+//
+// confidence is logged under the key "vendor_confidence_not_a_probability"
+// on purpose. It is the field every reader assumes they can threshold on,
+// it is not a probability (see the package doc), and a name is the only
+// documentation that travels with a log line.
+func (c *Client) logAnswers(purpose string, answers map[string]Answer) {
+	log := c.logger()
+	if log == nil {
+		return
+	}
+	for _, k := range sortedKeys(answers) {
+		a := answers[k]
+		attrs := []any{"purpose", purpose, "question", k, "type", a.Type}
+		if a.Choice != "" {
+			attrs = append(attrs, "choice", a.Choice, "prob", a.Prob())
+		}
+		if a.Score != nil {
+			attrs = append(attrs, "score", *a.Score)
+			// Legend is keyed by the rubric index as a string; show the band
+			// the score rounds to, so the line reads without the request.
+			// Clipped because a rubric entry is a sentence, and the point
+			// here is to name the band, not to reprint the question.
+			if len(a.Legend) > 0 {
+				if lbl, ok := a.Legend[strconv.Itoa(int(*a.Score+0.5))]; ok {
+					attrs = append(attrs, "level", truncate(lbl, maxLogLegend))
+				}
+			}
+		}
+		if a.Noul != nil {
+			attrs = append(attrs, "noul", *a.Noul)
+		}
+		if len(a.Probabilities) > 0 {
+			attrs = append(attrs, "probabilities", probsString(a.Probabilities))
+		}
+		if a.Confidence != nil {
+			attrs = append(attrs, "vendor_confidence_not_a_probability", *a.Confidence)
+		}
+		log.Info("jev answer", attrs...)
+	}
+}
+
+// logFailure records one failed attempt. It fires per attempt, not per
+// Ask, so a retried 429 leaves a trail showing the wait that was honoured.
+func (c *Client) logFailure(purpose string, r result, attempt int, took time.Duration) {
+	log := c.logger()
+	if log == nil {
+		return
+	}
+	attrs := []any{"purpose", purpose, "model", c.model, "status", r.status,
+		"attempt", attempt, "latency_ms", took.Milliseconds(), "err", r.err.Error()}
+	if r.retryIn != nil {
+		attrs = append(attrs, "retryable", true, "retry_after", *r.retryIn)
+	}
+	if len(r.body) > 0 {
+		attrs = append(attrs, "body", snippet(r.body))
+	}
+	log.Warn("jev call failed", attrs...)
+}
+
+// probsString renders a probability map deterministically: sorted by key so
+// two log lines for the same question are diffable.
+func probsString(p map[string]float64) string {
+	keys := make([]string, 0, len(p))
+	for k := range p {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%.4g", k, p[k])
+	}
+	return b.String()
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// truncate cuts s to at most n bytes, on a rune boundary, marking the cut.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…(truncated)"
 }
 
 // retryAfter parses the header's delta-seconds form. Anything else (absent,

@@ -212,6 +212,69 @@ type PromptOpts struct {
 	// Guardrails are never REMOVED by this, only compacted. See
 	// config.Config.ContractsFor.
 	Contracts bool
+	// To and Cc are the email's recipient lists (lowercased addr-specs).
+	// They produce the RECIPIENTS section — see MultiRecipientRule.
+	//
+	// Unlike Contracts, this section is emitted on EVERY turn, resumed or
+	// not: the contracts describe the thread and can be said once, but the
+	// recipient list is a property of this individual message and changes
+	// when someone hits reply-all or drops off the Cc.
+	To []string
+	Cc []string
+}
+
+// MultiRecipientRule is the instruction attached when an email is addressed
+// to someone besides the agent. Kept as one named constant because this is
+// an experiment in prompt-only scoping — there is no code enforcing it, so
+// tuning the wording is the only lever, and it should be one edit in one
+// obvious place.
+//
+// The last sentence matters more than it looks: without an explicit
+// instruction for "none of this is for me", a model handed an email
+// addressed to three other people will usually find something to do anyway
+// rather than admit the task was not its own.
+const MultiRecipientRule = "This email was addressed to more than one person. " +
+	"Act ONLY on the parts addressed to you — by your name, by an @mention of your address, " +
+	"or because you are the only person in To. Requests aimed at someone else are context, not your task: " +
+	"do not carry them out, and do not answer on their behalf. " +
+	"If nothing in the email is for you, do not invent work — reply in one or two lines saying so.\n\n"
+
+// recipientsBlock renders the RECIPIENTS section, or "" when the agent is
+// the only person on the email (the common case, whose prompt must stay
+// byte-for-byte what it was before this feature existed).
+func recipientsBlock(to, cc []string, agentEmail string) string {
+	others := 0
+	for _, list := range [][]string{to, cc} {
+		for _, a := range list {
+			if !strings.EqualFold(a, agentEmail) {
+				others++
+			}
+		}
+	}
+	if others == 0 {
+		return ""
+	}
+	mark := func(list []string) string {
+		out := make([]string, 0, len(list))
+		for _, a := range list {
+			if agentEmail != "" && strings.EqualFold(a, agentEmail) {
+				a += " (you)"
+			}
+			out = append(out, a)
+		}
+		return strings.Join(out, ", ")
+	}
+	var b strings.Builder
+	b.WriteString("RECIPIENTS\n")
+	if len(to) > 0 {
+		fmt.Fprintf(&b, "    To: %s\n", mark(to))
+	}
+	if len(cc) > 0 {
+		fmt.Fprintf(&b, "    Cc: %s\n", mark(cc))
+	}
+	b.WriteString("\n")
+	b.WriteString(MultiRecipientRule)
+	return b.String()
 }
 
 // BuildPrompt frames an email as a task prompt for the agent, listing any
@@ -377,6 +440,9 @@ func BuildPrompt(from, fromName, subject, body string, attachments []string, rep
 		// insurance against a model that has drifted over a long thread.
 		b.WriteString("Reply format and attachment handling are unchanged from earlier in this thread: same greeting line requirement, same reply-directory procedure for files.\n\n")
 	}
+	// Recipients sit immediately before the task, so "act only on the parts
+	// addressed to you" is the last thing read before the body it scopes.
+	b.WriteString(recipientsBlock(opts.To, opts.Cc, agentEmail))
 	b.WriteString("Task:\n")
 	b.WriteString(body)
 	if len(attachments) > 0 {

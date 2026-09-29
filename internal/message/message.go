@@ -3,6 +3,7 @@ package message
 import (
 	"fmt"
 	"io"
+	netmail "net/mail"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ type Message struct {
 	MessageID   string // e.g. "<abc@163.com>"
 	InReplyTo   string
 	References  []string
+	To          []string // lowercased addr-specs, in header order
+	Cc          []string // same
 	Subject     string
 	Date        time.Time // RFC5322 Date: header; zero if absent/unparseable
 	Body        string    // text/plain, in full (see Parse)
@@ -103,6 +106,8 @@ func Parse(r io.Reader, uid uint32, maxAttach int) (*Message, error) {
 		m.From = strings.ToLower(strings.TrimSpace(addrs[0].Address))
 		m.FromName = strings.TrimSpace(addrs[0].Name)
 	}
+	m.To = addressList(h, "To")
+	m.Cc = addressList(h, "Cc")
 	m.Subject, _ = h.Subject()
 	m.MessageID = firstMsgID(h.Get("Message-Id"))
 	m.InReplyTo = firstMsgID(h.Get("In-Reply-To"))
@@ -189,6 +194,66 @@ func sanitizeFilename(name string) string {
 		return ""
 	}
 	return name
+}
+
+// addressList returns the lowercased addr-specs from an address header, in
+// header order, normalised the same way From is.
+//
+// Display names are dropped: the only consumers are "is the agent in To?"
+// (an address comparison) and the recipients block in the agent prompt,
+// where a list of bare addresses is both shorter and less ambiguous than
+// "Chris <chris@163.com>".
+//
+// One malformed entry must not cost the whole header. go-message parses the
+// list atomically and fails all-or-nothing, so on error we fall back to
+// splitting on commas and keeping whatever parses individually — a real
+// Outlook footgun ("Chris; chris@163.com" and friends) should degrade to a
+// partial recipient list, not to an empty one, because an empty To is what
+// the cc-only check reads as "not addressed to me".
+//
+// The comma split is naive and will mangle a display name that contains a
+// comma ("Zhang, Chris" <c@163.com>) — but that half already round-tripped
+// through the strict parser, so this path only ever sees headers the strict
+// parser rejected, where a best-effort salvage beats nothing.
+func addressList(h gomail.Header, key string) []string {
+	if addrs, err := h.AddressList(key); err == nil {
+		out := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if v := strings.ToLower(strings.TrimSpace(a.Address)); v != "" {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	raw := strings.TrimSpace(h.Get(key))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		a, err := netmail.ParseAddress(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		if v := strings.ToLower(strings.TrimSpace(a.Address)); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// HasRecipient reports whether addr appears in list (case-insensitive).
+func HasRecipient(list []string, addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	for _, v := range list {
+		if strings.EqualFold(v, addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstMsgID(s string) string {

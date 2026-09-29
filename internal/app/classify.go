@@ -206,9 +206,14 @@ func ParseJevAnswers(ans map[string]jev.Answer) (runtime string, etaMin int, pro
 // slower in the worst case (one timed-out HTTP call, then the agent run it
 // would have done anyway) but can never make the ack path stop working.
 func (a *App) classifyTask(ctx context.Context, m *message.Message) (runtime string, etaMin int, ok bool) {
+	// Distinguishes "the agent probe was the configured classifier" from
+	// "the agent probe caught a Jev failure" in the outcome line — the two
+	// look identical in the logs otherwise, and only one of them is a
+	// problem worth chasing.
+	fellBack := false
 	if a.jev != nil {
 		state, questions := BuildJevClassify(m.From, m.Body)
-		ans, err := a.jev.Ask(ctx, state, questions)
+		ans, err := a.jev.Ask(ctx, "classify", state, questions)
 		if err == nil {
 			rt, eta, prob, perr := ParseJevAnswers(ans)
 			if perr == nil {
@@ -216,14 +221,18 @@ func (a *App) classifyTask(ctx context.Context, m *message.Message) (runtime str
 				// Logged, never thresholded — and note it is NOT the API's
 				// `confidence` field, which is a rescaling that reads far
 				// lower than the real split. See internal/jev.
-				a.log.Info("task classified", "from", m.From, "runtime", rt,
-					"eta_min", eta, "by", "jev", "model", a.jev.Model(), "prob", prob)
+				a.log.Info("classify outcome", "source", "jev", "runtime", rt,
+					"eta_min", eta, "prob", prob, "model", a.jev.Model(),
+					"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 				return rt, eta, true
 			}
 			err = perr
 		}
-		a.log.Warn("jev classify failed; falling back to the agent probe",
-			"from", m.From, "err", err)
+		// The fallback is named in the line itself: a WARN that only says
+		// what broke leaves the reader guessing whether the email stalled.
+		a.log.Warn("jev classify failed; using agent probe",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID, "err", err)
+		fellBack = true
 	}
 
 	// The agent probe uses IsNew=true with sessionID="" so it never pollutes
@@ -231,12 +240,17 @@ func (a *App) classifyTask(ctx context.Context, m *message.Message) (runtime str
 	// mint a throwaway session id we deliberately drop on the floor.
 	out, _, err := a.run.Run(ctx, BuildClassifyPrompt(m.From, m.Subject, m.Body), "", true)
 	if err != nil {
-		a.log.Warn("classifier run failed; skipping ack path", "from", m.From, "err", err)
+		a.log.Warn("classifier run failed; skipping ack path",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID, "err", err)
 		return "", 0, false
 	}
 	runtime, etaMin = ParseClassifyOutput(out)
-	a.log.Info("task classified", "from", m.From, "runtime", runtime,
-		"eta_min", etaMin, "by", "agent")
+	source := "agent"
+	if fellBack {
+		source = "agent(fallback)"
+	}
+	a.log.Info("classify outcome", "source", source, "runtime", runtime,
+		"eta_min", etaMin, "from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 	return runtime, etaMin, true
 }
 
