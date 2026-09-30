@@ -106,6 +106,17 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 				"the duration probe falls back to the agent and end-detection is inert")
 		}
 	}
+	if len(cfg.PeerAgents) > 0 && log != nil {
+		log.Info("peer agents enabled", "peers", cfg.PeerAgents, "end_detect", cfg.EndDetect,
+			"max_replies_per_hour", cfg.MaxRepliesPerHour)
+		if !cfg.EndDetect || jc == nil {
+			log.Warn("peer_agents is set but end_detect is not active; agent-to-agent threads " +
+				"will only stop at loop_guard.max_replies_per_hour")
+		}
+		if cfg.MaxRepliesPerHour == 0 {
+			log.Warn("peer_agents is set and max_replies_per_hour is 0; nothing hard-stops an agent-to-agent loop")
+		}
+	}
 	a := &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
 		triggers: triggers, rate: newReplyRate(time.Hour), hook: h, jev: jc,
 		replyFailures: make(map[string]int)}
@@ -219,7 +230,13 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			continue
 		}
 		if a.cfg.SkipAutomated {
-			if automated, why := m.IsAutomated(); automated {
+			if automated, why := m.IsAutomated(); automated && a.isPeerAgent(m.From) {
+				// A peer agent's replies are always Auto-Submitted; that is
+				// the point of the list. end_detect and the reply cap below
+				// are what end the exchange.
+				a.log.Info("accepting machine-generated mail from peer agent",
+					"from", m.From, "subject", m.Subject, "reason", why)
+			} else if automated {
 				a.log.Warn("skipping machine-generated mail (loop guard)",
 					"from", m.From, "subject", m.Subject, "reason", why)
 				_ = a.mb.MarkSeen(ctx, m.UID)
@@ -853,4 +870,15 @@ func recipientRole(m *message.Message, selfAddr string) string {
 	default:
 		return roleBccOrList
 	}
+}
+
+// isPeerAgent reports whether addr is listed in loop_guard.peer_agents.
+func (a *App) isPeerAgent(addr string) bool {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	for _, p := range a.cfg.PeerAgents {
+		if p == addr {
+			return true
+		}
+	}
+	return false
 }

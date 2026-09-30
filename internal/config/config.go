@@ -144,6 +144,14 @@ type Config struct {
 	// forever, each one burning an agent invocation per round. A human does
 	// not round-trip one thread ten times an hour; a loop does it in minutes.
 	MaxRepliesPerHour int
+	// PeerAgents lists addresses of other mail agents (typically other perch
+	// instances) that perch is meant to work with. Their mail is answered
+	// even though it carries Auto-Submitted — which every perch reply does —
+	// so two agents can hand work back and forth. Lowercased, exact match.
+	//
+	// What stops such a conversation is end_detect (a closing gets no reply)
+	// and, as the hard backstop, MaxRepliesPerHour. Both stay in force.
+	PeerAgents []string
 
 	// AppendSystemPrompt is text layered onto the agent's own system prompt
 	// on every run (--append-system-prompt), for a standing role the agent
@@ -249,8 +257,9 @@ type yamlConfig struct {
 	LoopGuard struct {
 		// Pointer so an explicit `false` is distinguishable from "unset",
 		// which must keep the default of true.
-		SkipAutomated     *bool `yaml:"skip_automated"`
-		MaxRepliesPerHour *int  `yaml:"max_replies_per_hour"`
+		SkipAutomated     *bool    `yaml:"skip_automated"`
+		MaxRepliesPerHour *int     `yaml:"max_replies_per_hour"`
+		PeerAgents        []string `yaml:"peer_agents"`
 	} `yaml:"loop_guard"`
 	Hooks struct {
 		OnEmail string `yaml:"on_email"`
@@ -487,6 +496,11 @@ func applyYAML(c *Config, path string) error {
 				"value", *v, "using", Defaults().MaxRepliesPerHour)
 		} else {
 			c.MaxRepliesPerHour = *v
+		}
+	}
+	for _, v := range y.LoopGuard.PeerAgents {
+		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+			c.PeerAgents = append(c.PeerAgents, v)
 		}
 	}
 	if v := strings.TrimSpace(y.Hooks.OnEmail); v != "" {

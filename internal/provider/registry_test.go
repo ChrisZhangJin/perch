@@ -15,8 +15,8 @@ func TestProviderTableConsistent(t *testing.T) {
 
 func TestProviderEndpoints(t *testing.T) {
 	cases := []struct {
-		name, imap, smtp            string
-		needsIMAPID, supportsIDLE   bool
+		name, imap, smtp          string
+		needsIMAPID, supportsIDLE bool
 	}{
 		{"163", "imap.163.com:993", "smtp.163.com:465", true, false},
 		{"126", "imap.126.com:993", "smtp.126.com:465", true, false},

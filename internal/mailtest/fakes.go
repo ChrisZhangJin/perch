@@ -97,7 +97,7 @@ func (s *FakeSender) Reply(to, subject, inReplyTo string, refs []string, body st
 	s.replies = append(s.replies, Reply{
 		To: to, Subject: subject, InReplyTo: inReplyTo,
 		References: append([]string{}, refs...),
-		Body: body, Attachments: append([]string{}, attachments...),
+		Body:       body, Attachments: append([]string{}, attachments...),
 	})
 	return nil
 }

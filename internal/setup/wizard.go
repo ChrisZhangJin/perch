@@ -406,10 +406,15 @@ func persist(cfg *config.Config) error {
 		"# labels nothing at all. 0 disables it. A human does not round-trip\n" +
 		"# one thread ten times an hour; a loop does it in minutes.\n" +
 		"#\n" +
+		"# peer_agents: addresses of other mail agents (e.g. another perch) to\n" +
+		"# work with. Their replies are answered despite Auto-Submitted; the\n" +
+		"# exchange ends via end_detect and, as a hard stop, the cap above.\n" +
+		"#\n" +
 		"# Mail from perch's own address is always ignored, with no knob.\n" +
 		"loop_guard:\n" +
 		"  skip_automated: " + strconv.FormatBool(cfg.SkipAutomated) + "\n" +
-		"  max_replies_per_hour: " + strconv.FormatInt(int64(cfg.MaxRepliesPerHour), 10) + "\n\n" +
+		"  max_replies_per_hour: " + strconv.FormatInt(int64(cfg.MaxRepliesPerHour), 10) + "\n" +
+		peerAgentsYAML(cfg.PeerAgents) + "\n" +
 		"# --- Whitelist ---\n" +
 		"# ONLY these senders can wake the agent. Empty list = deny everyone\n" +
 		"# (fail-closed). A literal `*` entry accepts everyone (the wizard\n" +
@@ -544,4 +549,16 @@ func formatAllowFrom(items []string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// peerAgentsYAML renders loop_guard.peer_agents, commented out when empty.
+func peerAgentsYAML(peers []string) string {
+	if len(peers) == 0 {
+		return "  # peer_agents: [other_agent@163.com]\n  peer_agents: []\n"
+	}
+	b := "  peer_agents:\n"
+	for _, p := range peers {
+		b += "    - " + p + "\n"
+	}
+	return b
 }

@@ -15,9 +15,11 @@ func TestManualWizardOutput(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	prev := isTTYFn
-	isTTYFn = func(_ interface{ /* dummy to match io.Reader shape */ }) bool { return true }
+	isTTYFn = func(_ interface { /* dummy to match io.Reader shape */
+	}) bool { return true }
 	_ = prev
-	isTTYFn = func(r interface{ /* io.Reader cast */ }) bool { return true }
+	isTTYFn = func(r interface { /* io.Reader cast */
+	}) bool { return true }
 	_ = prev
 
 	cfg := &config.Config{

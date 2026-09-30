@@ -144,6 +144,12 @@ prompt:
 loop_guard:
   skip_automated: true
   max_replies_per_hour: 10
+  # peer_agents: other mail agents (e.g. another perch) to work with by
+  # email. Their replies carry Auto-Submitted and are answered anyway; the
+  # exchange ends via end_detect (turn it on) and, as a hard stop, the cap
+  # above. Exact addresses only.
+  # peer_agents:
+  #   - agent_tommy@163.com
 
 # --- Whitelist -------------------------------------------------------------
 # ONLY these senders can wake the agent. Empty list = deny everyone

@@ -769,6 +769,27 @@ func TestProcessAnswersAutomatedMailWhenAllowed(t *testing.T) {
 	}
 }
 
+// TestProcessAnswersPeerAgent: another perch's reply carries Auto-Submitted,
+// and a listed peer is answered anyway; an unlisted robot still is not.
+func TestProcessAnswersPeerAgent(t *testing.T) {
+	run := &mailtest.ScriptedRunner{Outs: []string{"Hi,\n\nreplied"}}
+	mt := newTestApp(t, []string{"*"}, run)
+	mt.App().Cfg().PeerAgents = []string{"vos_th@163.com"}
+
+	if err := mt.SendRaw(1, botEML(1, "VOS_th@163.com", "Auto-Submitted: auto-replied\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.SendRaw(2, botEML(2, "other@163.com", "Auto-Submitted: auto-replied\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Prompts) != 1 {
+		t.Errorf("only the peer agent should be answered, got %d agent runs", len(run.Prompts))
+	}
+}
+
 // TestProcessSkipsOwnAddress guards the self-loop: a bounce, a Cc back to
 // ourselves, or a whitelist wide enough to match our own domain. Not
 // configurable, so no opt-out is tested.
