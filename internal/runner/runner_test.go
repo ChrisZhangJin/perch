@@ -103,8 +103,8 @@ func TestBuildPromptRequiresGrounding(t *testing.T) {
 }
 
 // TestGroundingSurvivesResume is the placement contract. GROUNDING is an
-// anti-fabrication guardrail, not a format convention, so prompt.contracts
-// must not strip it: a model deep into a thread is more likely to answer from
+// anti-fabrication guardrail, not a format convention, so compact
+// resume contracts must not drop it: a model deep into a thread is more likely to answer from
 // memory, not less. Same reasoning as SAFETY.
 func TestGroundingSurvivesResume(t *testing.T) {
 	warm := BuildPrompt("x@y", "X", "subj", "task", nil, "/reply", "agent_tommy@163.com", "/wd",
@@ -350,7 +350,7 @@ func runnerFromNanopiStub(t *testing.T, bin string) *Runner {
 //
 // Run used to retry here itself, reusing the same prompt. That became unsafe
 // once prompts started omitting the format contracts on resume
-// (config.PromptContracts): the retry would open a COLD session with a prompt
+// (compact contracts on resume): the retry would open a COLD session with a prompt
 // built for a warm one, so the agent never saw the ATTACHMENT PROTOCOL and
 // file replies vanished. Rebuilding the prompt is app.ProcessUnseen's job —
 // see TestProcessRetriesColdWithFullContracts.

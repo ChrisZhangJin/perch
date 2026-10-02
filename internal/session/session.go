@@ -33,6 +33,22 @@ func Load(path string) (*Registry, error) {
 	return r, nil
 }
 
+// Known returns the first of ids that is already a registered thread root.
+// A reply whose References[0] was dropped or rewritten in transit (clients
+// truncate long chains; some servers rewrite ids) still names an earlier
+// message of the thread somewhere, so matching any of them keeps it on the
+// same session instead of minting a new one every turn.
+func (r *Registry) Known(ids []string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range ids {
+		if _, ok := r.m[id]; ok {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // Resolve returns the session UUID for a thread root, generating and
 // persisting a new one on first sight. isNew is true only on first sight.
 func (r *Registry) Resolve(threadRoot string) (string, bool, error) {

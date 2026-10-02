@@ -47,6 +47,12 @@ type Config struct {
 	SessionStore       string
 	TLSInsecure        bool
 	LogLevel           string // "debug" | "info" | "warn" | "error"
+	// LogFile, when set, sends logs to this file instead of stderr. The file
+	// is rotated once it reaches LogMaxSizeMB, keeping LogMaxBackups old
+	// copies (path.1 newest … path.N oldest). LogMaxSizeMB 0 disables rotation.
+	LogFile       string
+	LogMaxSizeMB  int
+	LogMaxBackups int
 	// LongTaskAck gates the two-stage inbound flow (classifier probe +
 	// interim "processing, please wait" ack email for long tasks). Default
 	// off: every long-task ack costs an extra agent invocation per email,
@@ -102,31 +108,6 @@ type Config struct {
 	// prompt-injection-style side asks; a truly hostile prompt still needs
 	// the agent's own permission mode to block it.
 	AgentTaskOnly bool
-	// PromptContracts controls when BuildPrompt emits the format-contract
-	// sections (greeting framing, GREETING PROTOCOL, ATTACHMENT PROTOCOL).
-	// "always" repeats them on every email; "on_resume" (the default) sends
-	// them only when opening a new agent session, because a resumed session
-	// already replayed them from turn 1 — re-sending costs ~1.8 KB per email
-	// and that cost compounds, since every turn is persisted into the
-	// session history and re-read on each later resume.
-	//
-	// The SAFETY and GROUNDING guardrails are never REMOVED by this knob —
-	// their effectiveness depends on sitting immediately before the task body,
-	// and there is no supported way to turn them off. On a resumed turn they
-	// are sent in compact form: the cwd definition and the full refusal list
-	// verbatim, without the rationale and worked example the agent already
-	// read on turn 1. See ContractsFor and runner.PromptOpts.
-	PromptContracts string // "always" | "on_resume"
-	// StripQuoted controls removal of the quoted history an email client
-	// appends when the sender hits Reply. "never" (the default) leaves the
-	// body untouched; "on_resume" strips only when the agent session is being
-	// resumed, because the agent already has those turns; "always" strips
-	// unconditionally.
-	//
-	// on_resume is the meaningful setting. On a COLD session the quote is
-	// often the only context there is — someone forwards a thread to perch
-	// for the first time — so stripping it there loses the task itself.
-	StripQuoted string // "never" | "on_resume" | "always"
 
 	// SkipAutomated drops inbound mail that announces itself as machine
 	// generated (RFC 3834 Auto-Submitted, Precedence: bulk/list/junk,
@@ -193,44 +174,6 @@ const (
 	ClassifierJev   = "jev"
 )
 
-// Quoted-history strip modes. See Config.StripQuoted.
-const (
-	StripNever    = "never"
-	StripOnResume = "on_resume"
-	StripAlways   = "always"
-)
-
-// StripQuotedFor reports whether this run should strip the quoted history.
-// isNew is true when perch is opening a fresh agent session.
-func (c *Config) StripQuotedFor(isNew bool) bool {
-	switch c.StripQuoted {
-	case StripAlways:
-		return true
-	case StripOnResume:
-		return !isNew
-	default:
-		return false
-	}
-}
-
-// Prompt contract modes. See Config.PromptContracts.
-const (
-	ContractsAlways   = "always"
-	ContractsOnResume = "on_resume"
-)
-
-// ContractsFor reports whether this run's prompt should carry the format
-// contracts. isNew is true when perch is opening a fresh agent session.
-//
-// Callers MUST pass isNew=true for any run that starts a new session even
-// if the registry said otherwise — notably the session-lost retry in
-// app.ProcessUnseen, where a resume failed and perch restarts cold. A
-// contract-less prompt in a cold session means the agent never learns about
-// the reply directory, so "send me the file" fails silently.
-func (c *Config) ContractsFor(isNew bool) bool {
-	return c.PromptContracts != ContractsOnResume || isNew
-}
-
 // yamlConfig mirrors Config with snake_case keys. Old-style endpoint / agent
 // keys (imap_addr, smtp_addr, agent_bin, claude_workdir, claude_permission_mode)
 // are intentionally NOT here — applyYAML detects them via a raw yaml.Node
@@ -250,10 +193,6 @@ type yamlConfig struct {
 		TaskOnly           *bool  `yaml:"task_only"`
 		AppendSystemPrompt string `yaml:"append_system_prompt"`
 	} `yaml:"ai_agent"`
-	Prompt struct {
-		Contracts   string `yaml:"contracts"`
-		StripQuoted string `yaml:"strip_quoted"`
-	} `yaml:"prompt"`
 	LoopGuard struct {
 		// Pointer so an explicit `false` is distinguishable from "unset",
 		// which must keep the default of true.
@@ -276,13 +215,19 @@ type yamlConfig struct {
 	SessionStore       string        `yaml:"session_store"`
 	TLSInsecure        bool          `yaml:"tls_insecure_skip_verify"`
 	LogLevel           string        `yaml:"log_level"`
-	LongTaskAck        bool          `yaml:"long_task_ack"`
-	Classifier         string        `yaml:"classifier"`
-	JevAPIURL          string        `yaml:"jev_api_url"`
-	JevModel           string        `yaml:"jev_model"`
-	JevTimeout         time.Duration `yaml:"jev_timeout"`
-	EndDetect          bool          `yaml:"end_detect"`
-	EndDetectMinProb   float64       `yaml:"end_detect_min_prob"`
+	Log                struct {
+		Level      string `yaml:"level"`
+		File       string `yaml:"file"`
+		MaxSizeMB  *int   `yaml:"max_size_mb"`
+		MaxBackups *int   `yaml:"max_backups"`
+	} `yaml:"log"`
+	LongTaskAck      bool          `yaml:"long_task_ack"`
+	Classifier       string        `yaml:"classifier"`
+	JevAPIURL        string        `yaml:"jev_api_url"`
+	JevModel         string        `yaml:"jev_model"`
+	JevTimeout       time.Duration `yaml:"jev_timeout"`
+	EndDetect        bool          `yaml:"end_detect"`
+	EndDetectMinProb float64       `yaml:"end_detect_min_prob"`
 	// No jev_api_key here on purpose — the key is env-only
 	// (TYPESAFE_API_KEY). See Config.JevAPIKey.
 }
@@ -371,9 +316,9 @@ func Defaults() *Config {
 		MaxAttachmentBytes: 50 << 20, // 50 MB per attachment
 		SessionStore:       filepath.Join(os.TempDir(), "perch-sessions.json"),
 		LogLevel:           "info",
+		LogMaxSizeMB:       100,
+		LogMaxBackups:      5,
 		AgentTaskOnly:      true,
-		PromptContracts:    ContractsOnResume,
-		StripQuoted:        StripNever,
 		SkipAutomated:      true,
 		MaxRepliesPerHour:  10,
 		HookTimeout:        30 * time.Second,
@@ -424,6 +369,7 @@ func applyYAML(c *Config, path string) error {
 	deprecated := []string{
 		"imap_addr", "smtp_addr",
 		"agent_bin", "claude_workdir", "claude_permission_mode",
+		"prompt",
 	}
 	var node yaml.Node
 	if err := yaml.Unmarshal(data, &node); err != nil {
@@ -458,34 +404,6 @@ func applyYAML(c *Config, path string) error {
 	// all-whitespace value counts as unset.
 	if strings.TrimSpace(y.AIAgent.AppendSystemPrompt) != "" {
 		c.AppendSystemPrompt = y.AIAgent.AppendSystemPrompt
-	}
-	if v := y.Prompt.Contracts; v != "" {
-		switch v {
-		case ContractsAlways, ContractsOnResume:
-			c.PromptContracts = v
-		default:
-			// Warn rather than fail: an unusable value here should not stop
-			// perch from serving mail. Falling back to on_resume is the
-			// cheaper of the two modes and never omits a contract from a
-			// cold session, so a typo cannot silently degrade behaviour.
-			slog.Warn("unknown prompt.contracts value; using default",
-				"value", v, "want", ContractsAlways+"|"+ContractsOnResume,
-				"using", ContractsOnResume)
-			c.PromptContracts = ContractsOnResume
-		}
-	}
-	if v := y.Prompt.StripQuoted; v != "" {
-		switch v {
-		case StripNever, StripOnResume, StripAlways:
-			c.StripQuoted = v
-		default:
-			// Fall back to never: an unrecognised value must not silently
-			// start deleting parts of people's email.
-			slog.Warn("unknown prompt.strip_quoted value; using default",
-				"value", v, "want", StripNever+"|"+StripOnResume+"|"+StripAlways,
-				"using", StripNever)
-			c.StripQuoted = StripNever
-		}
 	}
 	if v := y.LoopGuard.SkipAutomated; v != nil {
 		c.SkipAutomated = *v
@@ -540,6 +458,19 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.LogLevel != "" {
 		c.LogLevel = y.LogLevel
+	}
+	// log.level wins over the legacy top-level log_level.
+	if v := strings.TrimSpace(y.Log.Level); v != "" {
+		c.LogLevel = v
+	}
+	if v := strings.TrimSpace(y.Log.File); v != "" {
+		c.LogFile = expandHome(v)
+	}
+	if v := y.Log.MaxSizeMB; v != nil {
+		c.LogMaxSizeMB = *v
+	}
+	if v := y.Log.MaxBackups; v != nil {
+		c.LogMaxBackups = *v
 	}
 	if y.LongTaskAck {
 		c.LongTaskAck = y.LongTaskAck
@@ -642,6 +573,8 @@ func replacement(k string) string {
 		return "ai_agent.workdir"
 	case "claude_permission_mode":
 		return "ai_agent.permission_mode"
+	case "prompt":
+		return "none; prompt.contracts and prompt.strip_quoted are now fixed: full contracts and quoted history on a new session, compact contracts and no quoted history on a resumed one"
 	}
 	return ""
 }
@@ -687,6 +620,19 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		c.LogLevel = v
+	}
+	if v := os.Getenv("LOG_FILE"); strings.TrimSpace(v) != "" {
+		c.LogFile = expandHome(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("LOG_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			c.LogMaxSizeMB = n
+		}
+	}
+	if v := os.Getenv("LOG_MAX_BACKUPS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			c.LogMaxBackups = n
+		}
 	}
 	if v := os.Getenv("APPEND_SYSTEM_PROMPT"); strings.TrimSpace(v) != "" {
 		c.AppendSystemPrompt = v
@@ -755,4 +701,14 @@ func ParseLogLevel(s string) (slog.Level, error) {
 		return slog.LevelError, nil
 	}
 	return slog.LevelInfo, fmt.Errorf("unknown log level %q (want debug/info/warn/error); falling back to info", s)
+}
+
+// expandHome replaces a leading "~/" with the user's home directory.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
 }

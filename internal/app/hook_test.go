@@ -177,7 +177,7 @@ func TestHookFailureDoesNotBlockReply(t *testing.T) {
 		t.Fatalf("hook should still have run, got %#v", got)
 	}
 	rs := mt.Replies()
-	if len(rs) != 1 || rs[0].Body != "the answer" {
+	if len(rs) != 1 || !strings.HasPrefix(rs[0].Body, "the answer\n\nOn ") {
 		t.Errorf("reply missing after a failing hook: %#v", rs)
 	}
 	if seen := mt.SeenUIDs(); len(seen) != 1 {

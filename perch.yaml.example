@@ -73,45 +73,17 @@ ai_agent:
   # append_system_prompt: |
   #   You are the kulink support desk. Task definitions live in ./tasks/.
 
-# --- Prompt ----------------------------------------------------------------
-# When to send the format-contract sections (the "reply like a human"
-# framing, GREETING PROTOCOL, ATTACHMENT PROTOCOL) — about 1.8 KB per email.
-#
-#   on_resume  DEFAULT. Send them only when opening a new agent session.
-#              A resumed session already replayed them from turn 1, and the
-#              cost compounds: every turn is persisted into the session
-#              history and re-read on each later resume. An 8-email thread
-#              carries ~47% less prompt text this way.
-#   always     Repeat them on every email. Use if you see replies drifting
-#              out of format on long threads.
-#
-# The SAFETY and GROUNDING guardrails are never removed by this — their
-# effectiveness depends on sitting immediately before the task body. On a
-# resumed turn they are sent COMPACT: the cwd definition and the full refusal
-# list verbatim, minus the rationale and the worked example the agent already
-# read on turn 1. Measured on a real thread, a resumed prompt went from 3486
-# to 1366 bytes.
-# No env override — YAML only.
-#
-# strip_quoted removes the quoted history a mail client appends when the
-# sender hits Reply (「原始邮件」blocks, "在 ... 写道：", "> " lines, Outlook
-# header blocks). On a long thread the quote grows with every round and is
-# re-sent each time, so this is where the bytes are.
-#
-#   never      DEFAULT. Leave the body exactly as received.
-#   on_resume  Strip only when the agent session is being resumed — it
-#              already has those turns. On a COLD session the quote is often
-#              the only context there is (someone forwards a thread to perch
-#              for the first time), so stripping there would remove the task.
-#   always     Strip unconditionally. Only if you never forward threads in.
-#
-# Detection is tuned for precision: an ambiguous line is left alone, because
-# a wrong cut deletes what the human wrote while a missed one only costs
-# tokens. A body that is nothing BUT a quote is never stripped.
-# No env override — YAML only.
-prompt:
-  contracts: on_resume     # on_resume | always
-  strip_quoted: never      # never | on_resume | always
+# --- Prompt & history ------------------------------------------------------
+# Not configurable (the old prompt.contracts / prompt.strip_quoted keys are
+# ignored with a WARN). The fixed behaviour:
+#   - New agent session: the prompt carries the full format contracts and the
+#     email body as received, quoted history included (a forwarded thread is
+#     often the whole task).
+#   - Resumed session: compact contracts, and the quoted history is stripped —
+#     the session already holds those turns.
+#   - Every reply email perch sends quotes the message it answers, so the
+#     thread history stays in the mailbox even though the agent's context
+#     does not carry it.
 
 # --- Loop protection -------------------------------------------------------
 # Two mail robots answering each other never stop on their own — each side
@@ -268,6 +240,11 @@ hooks:
 # debug surfaces the full prompt/response flow (including message bodies);
 # keep it at info or above on a real mailbox.
 log_level: info                         # LOG_LEVEL (debug | info | warn | error)
+log:
+  # level: info                         # LOG_LEVEL; when set, overrides log_level above
+  file: ""                              # LOG_FILE (e.g. ~/.perch/perch.log; empty = stderr)
+  max_size_mb: 100                      # LOG_MAX_SIZE_MB (rotate at this size; 0 = never)
+  max_backups: 5                        # LOG_MAX_BACKUPS (keeps perch.log.1 … perch.log.5)
 
 # --- Email handling --------------------------------------------------------
 max_prompt_bytes: 65536                 # MAX_PROMPT_BYTES (truncate huge bodies before

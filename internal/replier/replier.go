@@ -25,10 +25,47 @@ func sanitizeHeader(v string) string {
 	return strings.NewReplacer("\r", " ", "\n", " ").Replace(v)
 }
 
+// KindHeader names the header perch stamps on every email it sends, carrying
+// one of the Kind* values. Its purpose is the inbound side: an email whose
+// KindHeader says it is an ack or a notice is informational by construction,
+// so a perch that receives one — typically a peer agent's "please wait" —
+// never answers it. Answering was how two perch instances ended up trading
+// "please wait" / "got it" forever (2026-09-30).
+const KindHeader = "X-Perch-Kind"
+
+// Kinds of outgoing email. See KindHeader.
+const (
+	KindReply  = "reply"  // the agent's answer
+	KindAck    = "ack"    // interim "working on it" for a long task
+	KindNotice = "notice" // failure / no-reply notices
+)
+
+// Envelope is an outgoing email's addressing and threading.
+type Envelope struct {
+	To         string
+	Cc         []string // copied recipients; perch fills this for reply-all
+	Subject    string
+	InReplyTo  string
+	References []string
+	Kind       string // one of the Kind* values; "" means KindReply
+}
+
+// recipients returns every address the SMTP transaction must RCPT TO.
+func (e Envelope) recipients() []string {
+	return append([]string{e.To}, e.Cc...)
+}
+
+func (e Envelope) kind() string {
+	if e.Kind == "" {
+		return KindReply
+	}
+	return e.Kind
+}
+
 // Compose builds an RFC5322 threaded text/plain reply. All header values are
 // CRLF-sanitized.
-func Compose(fromAddr, to, subject, inReplyTo string, references []string, body string) []byte {
-	return []byte(composeHeaders(fromAddr, to, subject, inReplyTo, references, "text/plain; charset=utf-8") + body)
+func Compose(fromAddr string, env Envelope, body string) []byte {
+	return []byte(composeHeaders(fromAddr, env, "text/plain; charset=utf-8") + body)
 }
 
 // replyPrefixRe matches the "this is a reply" marker a mail client prepends to
@@ -56,54 +93,48 @@ func replySubject(subject string) string {
 	return "Re: " + subject
 }
 
-func composeHeaders(fromAddr, to, subject, inReplyTo string, references []string, contentType string) string {
-	subject = replySubject(sanitizeHeader(subject))
+func composeHeaders(fromAddr string, env Envelope, contentType string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", sanitizeHeader(fromAddr))
-	fmt.Fprintf(&b, "To: %s\r\n", sanitizeHeader(to))
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
-	fmt.Fprintf(&b, "Message-ID: <%d.%s>\r\n", time.Now().UnixNano(), sanitizeHeader(fromAddr))
-	if inReplyTo != "" {
-		fmt.Fprintf(&b, "In-Reply-To: %s\r\n", sanitizeHeader(inReplyTo))
-	}
-	if len(references) > 0 {
-		fmt.Fprintf(&b, "References: %s\r\n", sanitizeHeader(strings.Join(references, " ")))
-	}
-	// RFC 3834: label our own mail as an automatic reply so a compliant
-	// counterparty does not answer it. Two robots that both omit this reply
-	// to each other indefinitely — which is exactly what happened in
-	// production between two perch instances.
-	b.WriteString("Auto-Submitted: auto-replied\r\n")
+	writeAddressing(&b, fromAddr, env, replySubject(sanitizeHeader(env.Subject)))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: %s\r\n", contentType)
 	b.WriteString("\r\n")
 	return b.String()
 }
 
-// ComposeWithAttachments builds an RFC5322 threaded multipart/mixed reply:
-// one text/plain body part plus one part per attachment file path. Used when
-// the agent staged files in the reply/ directory.
-func ComposeWithAttachments(fromAddr, to, subject, inReplyTo string, references []string, body string, attachments []string) ([]byte, error) {
-	// Same header normalization as the plain path: sanitize + Re: prefix.
-	subject = replySubject(sanitizeHeader(subject))
-
-	var buf strings.Builder
-	mw := multipart.NewWriter(&buf)
-	fmt.Fprintf(&buf, "From: %s\r\n", sanitizeHeader(fromAddr))
-	fmt.Fprintf(&buf, "To: %s\r\n", sanitizeHeader(to))
-	fmt.Fprintf(&buf, "Subject: %s\r\n", sanitizeHeader(subject))
-	fmt.Fprintf(&buf, "Message-ID: <%d.%s>\r\n", time.Now().UnixNano(), sanitizeHeader(fromAddr))
-	if inReplyTo != "" {
-		fmt.Fprintf(&buf, "In-Reply-To: %s\r\n", sanitizeHeader(inReplyTo))
+// writeAddressing writes the header block every perch email shares: From,
+// To, Cc, the already-normalized subject, Message-ID, threading, and the two
+// loop-protection labels.
+func writeAddressing(b *strings.Builder, fromAddr string, env Envelope, subject string) {
+	fmt.Fprintf(b, "From: %s\r\n", sanitizeHeader(fromAddr))
+	fmt.Fprintf(b, "To: %s\r\n", sanitizeHeader(env.To))
+	if len(env.Cc) > 0 {
+		fmt.Fprintf(b, "Cc: %s\r\n", sanitizeHeader(strings.Join(env.Cc, ", ")))
 	}
-	if len(references) > 0 {
-		fmt.Fprintf(&buf, "References: %s\r\n", sanitizeHeader(strings.Join(references, " ")))
+	fmt.Fprintf(b, "Subject: %s\r\n", subject)
+	fmt.Fprintf(b, "Message-ID: <%d.%s>\r\n", time.Now().UnixNano(), sanitizeHeader(fromAddr))
+	if env.InReplyTo != "" {
+		fmt.Fprintf(b, "In-Reply-To: %s\r\n", sanitizeHeader(env.InReplyTo))
+	}
+	if len(env.References) > 0 {
+		fmt.Fprintf(b, "References: %s\r\n", sanitizeHeader(strings.Join(env.References, " ")))
 	}
 	// RFC 3834: label our own mail as an automatic reply so a compliant
 	// counterparty does not answer it. Two robots that both omit this reply
 	// to each other indefinitely — which is exactly what happened in
 	// production between two perch instances.
-	buf.WriteString("Auto-Submitted: auto-replied\r\n")
+	b.WriteString("Auto-Submitted: auto-replied\r\n")
+	fmt.Fprintf(b, "%s: %s\r\n", KindHeader, env.kind())
+}
+
+// ComposeWithAttachments builds an RFC5322 threaded multipart/mixed reply:
+// one text/plain body part plus one part per attachment file path. Used when
+// the agent staged files in the reply/ directory.
+func ComposeWithAttachments(fromAddr string, env Envelope, body string, attachments []string) ([]byte, error) {
+	var buf strings.Builder
+	mw := multipart.NewWriter(&buf)
+	// Same header normalization as the plain path: sanitize + Re: prefix.
+	writeAddressing(&buf, fromAddr, env, replySubject(sanitizeHeader(env.Subject)))
 	buf.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; charset=utf-8; boundary=%q\r\n", mw.Boundary())
 	buf.WriteString("\r\n")
@@ -195,13 +226,13 @@ func (r *Replier) SetHook(fn func(attempt int, err error, msgSize int)) { r.onAt
 // The onAttempt hook fires after every attempt including the final one. When
 // all attempts fail with a transient error, the final error is returned and
 // the hook has been invoked once per attempt so the caller can react.
-func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body string, attachments []string) error {
+func (r *Replier) Reply(env Envelope, body string, attachments []string) error {
 	var msg []byte
 	var err error
 	if len(attachments) > 0 {
-		msg, err = ComposeWithAttachments(r.cfg.Email, to, subject, inReplyTo, references, body, attachments)
+		msg, err = ComposeWithAttachments(r.cfg.Email, env, body, attachments)
 	} else {
-		msg = Compose(r.cfg.Email, to, subject, inReplyTo, references, body)
+		msg = Compose(r.cfg.Email, env, body)
 	}
 	if err != nil {
 		return err
@@ -213,7 +244,7 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 	}
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err := r.sendOnce(to, msg)
+		err := r.sendOnce(env.recipients(), msg)
 		if r.onAttempt != nil {
 			r.onAttempt(attempt, err, len(msg))
 		}
@@ -233,7 +264,8 @@ func (r *Replier) Reply(to, subject, inReplyTo string, references []string, body
 }
 
 // sendOnce dials SMTP + sends one DATA transaction with proper RSET on failure.
-func (r *Replier) sendOnce(to string, msg []byte) error {
+// Every address in rcpts gets a RCPT TO; one refused recipient fails the send.
+func (r *Replier) sendOnce(rcpts []string, msg []byte) error {
 	host, _, err := splitHostPort(r.smtpAddr)
 	if err != nil {
 		return fmt.Errorf("smtp addr: %w", err)
@@ -267,8 +299,10 @@ func (r *Replier) sendOnce(to string, msg []byte) error {
 	if err := c.Mail(r.cfg.Email); err != nil {
 		return fmt.Errorf("smtp mail: %w", err)
 	}
-	if err := c.Rcpt(to); err != nil {
-		return fmt.Errorf("smtp rcpt: %w", err)
+	for _, to := range rcpts {
+		if err := c.Rcpt(to); err != nil {
+			return fmt.Errorf("smtp rcpt %s: %w", to, err)
+		}
 	}
 	w, err := c.Data()
 	if err != nil {
@@ -499,6 +533,7 @@ func ComposeFailure(fromAddr, to, subject, inReplyTo string, references []string
 	// A failure notice is machine generated too — same reasoning as the
 	// reply composers above.
 	b.WriteString("Auto-Submitted: auto-replied\r\n")
+	fmt.Fprintf(&b, "%s: %s\r\n", KindHeader, KindNotice)
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")

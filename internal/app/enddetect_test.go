@@ -118,6 +118,53 @@ func TestEndDetectIgnoresFirstEmailInThread(t *testing.T) {
 	}
 }
 
+// TestEndDetectRunsOnPeerFirstEmail: a peer agent's reply in a thread perch's
+// registry has never seen (its own agent started it via email-cli) is still
+// judged, so a peer's sign-off ends the exchange instead of being answered.
+func TestEndDetectRunsOnPeerFirstEmail(t *testing.T) {
+	var calls int
+	mt := newEndDetectApp(t, endDetectServer(t, 0.99, &calls).URL)
+	mt.App().Cfg().PeerAgents = []string{"alice@163.com"}
+
+	if err := mt.SendRaw(11, rawMail("<c9@mailtest>", "Re: other",
+		"<other-root@mailtest>", "（重复自动回复，无操作，不再回执）")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("jev calls = %d, want 1 for a peer agent's first email", calls)
+	}
+	if rs := mt.Replies(); len(rs) != 0 {
+		t.Errorf("peer sign-off was answered: %#v", rs)
+	}
+}
+
+// TestEndDetectMatchesThreadByAnyReference: the ping-pong bug. A peer's
+// reply whose References[0] is not the root perch registered (rewritten or
+// truncated in transit) but which still names that root further down is a
+// continuation, not a first email — end_detect must run.
+func TestEndDetectMatchesThreadByAnyReference(t *testing.T) {
+	var calls int
+	mt := newEndDetectApp(t, endDetectServer(t, 0.99, &calls).URL)
+
+	raw := strings.Replace(string(rawMail("<c9@mailtest>", "Re: hi", "<root@mailtest>", "好的，谢谢！")),
+		"References: <root@mailtest>", "References: <rewritten@163.com> <root@mailtest>", 1)
+	if err := mt.SendRaw(11, []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mt.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("jev calls = %d, want 1: the thread is known via References", calls)
+	}
+	if rs := mt.Replies(); len(rs) != 0 {
+		t.Errorf("closing reply was answered: %#v", rs)
+	}
+}
+
 // rawMail builds an RFC822 message. When inReplyTo is empty the message is a
 // thread root; otherwise it is a continuation, which is the only shape
 // end-detection is allowed to act on.

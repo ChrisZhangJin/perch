@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 	"io"
 	"log/slog"
 	"net/http"
@@ -99,7 +100,7 @@ func TestQueuedMailboxMarkSeenAndCloseNoOp(t *testing.T) {
 
 func TestInjectSenderCaptures(t *testing.T) {
 	is := &InjectSender{}
-	if err := is.Reply("alice@x", "Re: hi", "<r@x>", []string{"<r@x>"}, "body", []string{"/tmp/a"}); err != nil {
+	if err := is.Reply(replier.Envelope{To: "alice@x", Subject: "Re: hi", InReplyTo: "<r@x>", References: []string{"<r@x>"}}, "body", []string{"/tmp/a"}); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	rp := is.LastReply()
@@ -118,7 +119,7 @@ func TestInjectSenderCaptures(t *testing.T) {
 // zero-value construction below stops being safe.
 func TestInjectSenderSendsNothing(t *testing.T) {
 	var s app.ReplySender = &InjectSender{} // zero value must be usable
-	if err := s.Reply("alice@x", "s", "<i@x>", nil, "b", nil); err != nil {
+	if err := s.Reply(replier.Envelope{To: "alice@x", Subject: "s", InReplyTo: "<i@x>"}, "b", nil); err != nil {
 		t.Fatalf("zero-value InjectSender must accept replies without a transport: %v", err)
 	}
 }
@@ -128,8 +129,8 @@ func TestInjectSenderSendsNothing(t *testing.T) {
 // with SMTP gone, a dropped reply would vanish without a trace.
 func TestInjectSenderCapturesEveryReply(t *testing.T) {
 	is := &InjectSender{}
-	_ = is.Reply("a@x", "s", "<i@x>", nil, "the ack", nil)
-	_ = is.Reply("a@x", "s", "<i@x>", nil, "the answer", nil)
+	_ = is.Reply(replier.Envelope{To: "a@x", Subject: "s", InReplyTo: "<i@x>"}, "the ack", nil)
+	_ = is.Reply(replier.Envelope{To: "a@x", Subject: "s", InReplyTo: "<i@x>"}, "the answer", nil)
 
 	rs := is.Replies()
 	if len(rs) != 2 {
@@ -145,7 +146,7 @@ func TestInjectSenderCapturesEveryReply(t *testing.T) {
 
 func TestInjectSenderClearResets(t *testing.T) {
 	is := &InjectSender{}
-	_ = is.Reply("a", "s", "i", nil, "b", nil)
+	_ = is.Reply(replier.Envelope{To: "a", Subject: "s", InReplyTo: "i"}, "b", nil)
 	is.Clear()
 	if is.LastReply() != nil {
 		t.Errorf("Clear should reset; got %+v", is.LastReply())

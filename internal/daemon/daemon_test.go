@@ -81,52 +81,26 @@ func TestPreparePidfile_LivePID_Refuses(t *testing.T) {
 	}
 }
 
-func TestPreparePidfile_StalePID_Refuses(t *testing.T) {
+func TestPreparePidfile_StalePID_Removes(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "perch.pid")
-	// A pid that is almost certainly dead. Use 1 (init) only if it
-	// returns ESRCH on this kernel; otherwise use a synthetic pid.
 	dead := 999_999_99
 	if processAlive(dead) {
-		t.Skip("synthetic dead pid was reported alive; cannot test stale refusal")
+		t.Skip("synthetic dead pid was reported alive; cannot test stale cleanup")
 	}
 	if err := os.WriteFile(pf, []byte(strconv.Itoa(dead)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := preparePidfile(pf, nil)
-	if !errors.Is(err, ErrStalePidfile) {
-		t.Fatalf("expected ErrStalePidfile, got %v", err)
-	}
-	// Pidfile must NOT have been removed — the operator inspects/removes it.
-	if _, err := os.Stat(pf); err != nil {
-		t.Fatalf("stale pidfile was removed (should be left for operator): %v", err)
-	}
-	b, _ := os.ReadFile(pf)
-	if string(b) != strconv.Itoa(dead) {
-		t.Fatalf("stale pidfile contents changed: %q", b)
-	}
-}
-
-func TestPreparePidfile_StalePID_LogsWarning(t *testing.T) {
-	dir := t.TempDir()
-	pf := filepath.Join(dir, "perch.pid")
-	dead := 999_999_99
-	if processAlive(dead) {
-		t.Skip("synthetic dead pid was reported alive")
-	}
-	_ = os.WriteFile(pf, []byte(strconv.Itoa(dead)), 0o644)
 	var buf strings.Builder
 	log := slog.New(slog.NewTextHandler(io.Writer(&buf), nil))
-	// preparePidfile now returns ErrStalePidfile on stale pidfile —
-	// we ignore the error here, only the warning text matters.
-	_ = preparePidfile(pf, log)
-	out := buf.String()
-	if !strings.Contains(out, "stale pidfile") {
-		t.Fatalf("expected warn log about stale pidfile, got %q", out)
+	if err := preparePidfile(pf, log); err != nil {
+		t.Fatalf("expected nil for stale pidfile, got %v", err)
 	}
-	// We are NOT removing — make sure the warning does not lie.
-	if strings.Contains(out, "removing") {
-		t.Fatalf("warning should not say 'removing' (we are refusing, not removing): %q", out)
+	if _, err := os.Stat(pf); !os.IsNotExist(err) {
+		t.Fatalf("stale pidfile should have been removed, stat err=%v", err)
+	}
+	if !strings.Contains(buf.String(), "removing") {
+		t.Fatalf("expected warn log about removing stale pidfile, got %q", buf.String())
 	}
 }
 

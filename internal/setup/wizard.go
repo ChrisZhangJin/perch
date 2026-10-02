@@ -302,12 +302,6 @@ func persist(cfg *config.Config) error {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = def.LogLevel
 	}
-	if cfg.PromptContracts == "" {
-		cfg.PromptContracts = def.PromptContracts
-	}
-	if cfg.StripQuoted == "" {
-		cfg.StripQuoted = def.StripQuoted
-	}
 	// MaxRepliesPerHour has a non-zero default, so a zero here is ambiguous:
 	// it could be "unset" or a deliberate "no cap". Treat it as unset, which
 	// is the safe reading — the alternative silently removes the backstop.
@@ -370,29 +364,6 @@ func persist(cfg *config.Config) error {
 		"  # WARN for agents whose --help lacks the flag. Empty = off.\n" +
 		"  # Env override: APPEND_SYSTEM_PROMPT\n" +
 		formatAppendSystemPrompt(cfg.AppendSystemPrompt) + "\n" +
-		"# --- Prompt ---\n" +
-		"# contracts: when to send the format-contract sections (reply framing,\n" +
-		"# GREETING PROTOCOL, ATTACHMENT PROTOCOL) — roughly 1.8 KB per email.\n" +
-		"#   on_resume — DEFAULT. Only when opening a new agent session; a\n" +
-		"#               resumed session already has them in its replayed\n" +
-		"#               history, and repeating them compounds because every\n" +
-		"#               turn is persisted and re-read on later resumes.\n" +
-		"#   always    — repeat on every email; use if long threads drift\n" +
-		"#               out of reply format.\n" +
-		"# SAFETY and GROUNDING are never removed by this, only compacted on a\n" +
-		"# resumed turn: cwd and the full refusal list stay, the rationale and\n" +
-		"# the worked example go.\n" +
-		"prompt:\n" +
-		"  contracts: " + cfg.PromptContracts + "\n" +
-		"  # strip_quoted: drop the quoted history a client appends on Reply\n" +
-		"  # (「原始邮件」blocks, \"在 ... 写道：\", \"> \" lines, header blocks).\n" +
-		"  #   never     — DEFAULT. Leave the body as received.\n" +
-		"  #   on_resume — strip only when resuming a session, which already\n" +
-		"  #               has those turns. A cold session may need the quote:\n" +
-		"  #               a forwarded thread is sometimes the whole task.\n" +
-		"  #   always    — strip unconditionally.\n" +
-		"  # Ambiguous lines are left alone; a quote-only body is never stripped.\n" +
-		"  strip_quoted: " + cfg.StripQuoted + "\n\n" +
 		"# --- Loop protection ---\n" +
 		"# Two mail robots answering each other never stop on their own. Each\n" +
 		"# round costs an agent invocation on both sides.\n" +
@@ -471,7 +442,11 @@ func persist(cfg *config.Config) error {
 		formatOnEmailHook(cfg.OnEmailHook) +
 		"  timeout: " + cfg.HookTimeout.String() + "\n\n" +
 		"# --- Logging ---\n" +
-		"log_level: " + cfg.LogLevel + "   # LOG_LEVEL (debug / info / warn / error)\n\n" +
+		"log_level: " + cfg.LogLevel + "   # LOG_LEVEL (debug / info / warn / error)\n" +
+		"log:\n" +
+		"  file: \"" + cfg.LogFile + "\"   # LOG_FILE (empty = stderr)\n" +
+		"  max_size_mb: " + strconv.Itoa(cfg.LogMaxSizeMB) + "   # LOG_MAX_SIZE_MB (rotate at this size; 0 = never)\n" +
+		"  max_backups: " + strconv.Itoa(cfg.LogMaxBackups) + "   # LOG_MAX_BACKUPS\n\n" +
 		"# --- Email handling ---\n" +
 		"max_prompt_bytes: " + strconv.FormatInt(int64(cfg.MaxPromptBytes), 10) +
 		"   # MAX_PROMPT_BYTES (truncate huge bodies before the agent sees them)\n" +

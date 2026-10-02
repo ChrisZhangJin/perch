@@ -472,7 +472,7 @@ func (r *Runner) Run(ctx context.Context, prompt, sessionID string, isNew bool) 
 		// pointer drifted to a different cwd, or this thread predates the
 		// workdir-resolution fix). The thread can still be served, but only
 		// from a COLD session — and `prompt` was built for a warm one, so it
-		// may be missing the format contracts (see config.PromptContracts).
+		// may be missing the format contracts (contracts are compact on resume).
 		//
 		// Retrying here with the same prompt would put the agent in a fresh
 		// session that never saw the ATTACHMENT PROTOCOL, so "send me the

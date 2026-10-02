@@ -45,7 +45,7 @@ type TaskRunner interface {
 // ReplySender mails the agent's answer back. attachments lists files staged
 // in the reply/ dir by the agent; when non-empty the message is multipart.
 type ReplySender interface {
-	Reply(to, subject, inReplyTo string, references []string, body string, attachments []string) error
+	Reply(env replier.Envelope, body string, attachments []string) error
 }
 
 type App struct {
@@ -229,6 +229,17 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
+		// Another perch's ack or notice. Those are informational by
+		// construction — "please wait", "could not reply" — and answering
+		// one is how two perch instances traded "please wait" / "got it"
+		// forever (2026-09-30). Not configurable, and ahead of the peer
+		// exemption below: peers may converse, but never about these.
+		if m.PerchKind == replier.KindAck || m.PerchKind == replier.KindNotice {
+			a.log.Info("skipping perch ack/notice (loop guard)",
+				"from", m.From, "subject", m.Subject, "kind", m.PerchKind)
+			_ = a.mb.MarkSeen(ctx, m.UID)
+			continue
+		}
 		if a.cfg.SkipAutomated {
 			if automated, why := m.IsAutomated(); automated && a.isPeerAgent(m.From) {
 				// A peer agent's replies are always Auto-Submitted; that is
@@ -274,16 +285,22 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
-		if ok, n := a.rate.Allow(m.ThreadRoot(), a.cfg.MaxRepliesPerHour); !ok {
+		root := m.ThreadRoot()
+		if known, ok := a.sess.Known(m.ThreadIDs()); ok {
+			root = known
+		}
+		a.log.Debug("thread", "root", root, "in_reply_to", m.InReplyTo,
+			"references", strings.Join(m.References, " "), "message_id", m.MessageID)
+		if ok, n := a.rate.Allow(root, a.cfg.MaxRepliesPerHour); !ok {
 			a.log.Warn("thread reply cap reached; not replying (loop guard)",
-				"from", m.From, "subject", m.Subject, "thread", m.ThreadRoot(),
+				"from", m.From, "subject", m.Subject, "thread", root,
 				"replies_last_hour", n, "cap", a.cfg.MaxRepliesPerHour)
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
 		}
 		// ---------------------------------------------------------------
 
-		sid, isNew, err := a.sess.Resolve(m.ThreadRoot())
+		sid, isNew, err := a.sess.Resolve(root)
 		if err != nil {
 			a.log.Error("session resolve failed", "err", err)
 			continue
@@ -341,25 +358,6 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			a.log.Warn("reply dir create failed", "err", err)
 		}
 
-		// Duration probe: when cfg.LongTaskAck is on, ask whether this task
-		// will run long. If long, send an interim ack email so the human
-		// isn't left wondering while the real run works. Probe failures are
-		// logged and swallowed — a bad probe must never block the real reply.
-		//
-		// Off by default. See config.LongTaskAck and classifyTask.
-		if a.cfg.LongTaskAck {
-			if runtime, etaMin, ok := a.classifyTask(ctx, m); ok && runtime == "long" {
-				ack := BuildLongAckBody(m.FromName,
-					runner.AgentDisplayName(a.cfg.Email), etaMin,
-					looksChinese(failureLanguageSample(m.Subject, m.Body)))
-				if err := a.rep.Reply(m.From, m.Subject, m.MessageID,
-					appendRef(m.References, m.MessageID), ack, nil); err != nil {
-					a.log.Warn("long-task ack send failed; continuing to run task",
-						"from", m.From, "err", err)
-				}
-			}
-		}
-
 		originalBody := m.Body
 		// Body transformations, in this order. Stripping must come before the
 		// size cap: applied the other way round, a long thread's quoted
@@ -371,7 +369,10 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		// history, so the quote may be the only context it gets.
 		applyBody := func(cold bool) {
 			body := m.Body
-			if a.cfg.StripQuotedFor(cold) {
+			// Quoted history is stripped only when resuming: the session
+			// already holds those turns. A cold session keeps it — for a
+			// thread forwarded to perch, the quote IS the task's context.
+			if !cold {
 				stripped, removed := message.StripQuoted(body)
 				if removed > 0 {
 					a.log.Debug("stripped quoted history",
@@ -383,6 +384,31 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		}
 		applyBody(isNew)
 
+		// Duration probe: when cfg.LongTaskAck is on, ask whether this task
+		// will run long. If long, send an interim ack email so the human
+		// isn't left wondering while the real run works. Probe failures are
+		// logged and swallowed — a bad probe must never block the real reply.
+		//
+		// Runs on the transformed body, after applyBody: on a resumed thread
+		// the quoted history is gone, so a one-line "got it" is judged as a
+		// one-line "got it" and not as the long task quoted beneath it.
+		//
+		// Never for machine-generated mail: "please wait" is for a human
+		// watching an inbox, and a peer agent answering it is a loop.
+		//
+		// Off by default. See config.LongTaskAck and classifyTask.
+		if automated, _ := m.IsAutomated(); a.cfg.LongTaskAck && !automated {
+			if runtime, etaMin, ok := a.classifyTask(ctx, m); ok && runtime == "long" {
+				ack := BuildLongAckBody(m.FromName,
+					runner.AgentDisplayName(a.cfg.Email), etaMin,
+					looksChinese(failureLanguageSample(m.Subject, originalBody)))
+				if err := a.rep.Reply(a.envelope(m, replier.KindAck), ack, nil); err != nil {
+					a.log.Warn("long-task ack send failed; continuing to run task",
+						"from", m.From, "err", err)
+				}
+			}
+		}
+
 		// buildPrompt is a closure so the cold-retry path below can rebuild
 		// with contracts forced on. Passing cold=true means "this run opens
 		// a fresh agent session", which is what decides whether the format
@@ -390,8 +416,10 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		buildPrompt := func(cold bool) string {
 			return runner.BuildPrompt(m.From, m.FromName, m.Subject, m.Body, saved, rpDir,
 				a.cfg.Email, a.cfg.AgentWorkdir, runner.PromptOpts{
-					TaskOnly:  a.cfg.AgentTaskOnly,
-					Contracts: a.cfg.ContractsFor(cold),
+					TaskOnly: a.cfg.AgentTaskOnly,
+					// Full contracts on a fresh session only; a resumed one
+					// read them on turn 1.
+					Contracts: cold,
 					To:        m.To,
 					Cc:        m.Cc,
 				})
@@ -427,7 +455,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			// keeping it costs the NEXT email in this thread a doomed resume
 			// (spawn → "session lost" → cold retry) before it recovers.
 			if sidUnconfirmed {
-				if ferr := a.sess.Forget(m.ThreadRoot()); ferr != nil {
+				if ferr := a.sess.Forget(root); ferr != nil {
 					a.log.Warn("session forget failed", "from", m.From, "err", ferr)
 				}
 			}
@@ -436,7 +464,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			// them and leaks binary names, paths and stderr. See failure.go.
 			a.log.Error("agent run failed", "from", m.From, "err", err)
 			zh := looksChinese(failureLanguageSample(m.Subject, originalBody))
-			_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
+			_ = a.rep.Reply(a.envelope(m, replier.KindNotice),
 				BuildAgentFailureBody(m.FromName, runner.AgentDisplayName(a.cfg.Email), zh), nil)
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
@@ -446,7 +474,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		// --session and let nanopi mint its own UUIDv7); future agents that
 		// pick their own id will plug in the same way.
 		if nativeID != "" && nativeID != sid {
-			if err := a.sess.Replace(m.ThreadRoot(), nativeID); err != nil {
+			if err := a.sess.Replace(root, nativeID); err != nil {
 				a.log.Warn("session replace failed", "from", m.From, "err", err)
 			} else {
 				a.log.Debug("adopted native session id",
@@ -491,7 +519,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 			} else {
 				out = out2
 				if nativeID2 != "" && nativeID2 != retrySid {
-					if err := a.sess.Replace(m.ThreadRoot(), nativeID2); err != nil {
+					if err := a.sess.Replace(root, nativeID2); err != nil {
 						a.log.Warn("session replace failed", "from", m.From, "err", err)
 					}
 				}
@@ -505,7 +533,7 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 				a.log.Error("agent produced a greeting-only reply twice; not sending bare greeting",
 					"from", m.From, "subject", m.Subject)
 				zh := looksChinese(failureLanguageSample(m.Subject, originalBody))
-				_ = a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID),
+				_ = a.rep.Reply(a.envelope(m, replier.KindNotice),
 					BuildNoReplyBody(m.FromName, runner.AgentDisplayName(a.cfg.Email), zh), nil)
 				_ = a.mb.MarkSeen(ctx, m.UID)
 				continue
@@ -515,7 +543,12 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		if err != nil {
 			a.log.Warn("reply file collect failed", "err", err)
 		}
-		if err := a.rep.Reply(m.From, m.Subject, m.MessageID, appendRef(m.References, m.MessageID), greeted, files); err != nil {
+		// The email carries the thread's history even though the agent's
+		// context does not: the quote is appended here, after the agent ran,
+		// from the body as received.
+		reply := greeted + QuoteHistory(m.From, m.FromName, m.Date, originalBody,
+			looksChinese(failureLanguageSample(m.Subject, originalBody)))
+		if err := a.rep.Reply(a.envelope(m, replier.KindReply), reply, files); err != nil {
 			// The answer exists; only the handoff to SMTP failed. Retry it on
 			// a later poll — but that only works if we also drop the dedup
 			// record, or FirstSight bounces the message on the next fetch and
@@ -675,6 +708,36 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// envelope addresses a reply to m reply-all style: To the sender, Cc every
+// other To and Cc recipient except perch itself. A peer perch left in Cc
+// sees itself as cc-only and stays quiet, so reply-all cannot start a loop.
+func (a *App) envelope(m *message.Message, kind string) replier.Envelope {
+	return replier.Envelope{
+		To:         m.From,
+		Cc:         replyCc(m, a.cfg.Email),
+		Subject:    m.Subject,
+		InReplyTo:  m.MessageID,
+		References: appendRef(m.References, m.MessageID),
+		Kind:       kind,
+	}
+}
+
+// replyCc returns m's To and Cc recipients minus the sender and self,
+// deduplicated, in header order.
+func replyCc(m *message.Message, self string) []string {
+	seen := map[string]bool{strings.ToLower(m.From): true, strings.ToLower(self): true}
+	var out []string
+	for _, addr := range append(append([]string{}, m.To...), m.Cc...) {
+		k := strings.ToLower(strings.TrimSpace(addr))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
 }
 
 func appendRef(refs []string, id string) []string {

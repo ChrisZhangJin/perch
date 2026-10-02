@@ -26,7 +26,7 @@ import (
 func newTestApp(t *testing.T, allowFrom []string, run app.TaskRunner) *mailtest.Mailtest {
 	t.Helper()
 	// Seed from Defaults, not a bare literal: several Config fields have
-	// non-zero defaults (AgentTaskOnly=true, PromptContracts=on_resume) that a
+	// non-zero defaults (e.g. AgentTaskOnly=true) that a
 	// struct literal would silently set to the opposite, so the tests would
 	// exercise a configuration production never runs.
 	cfg := config.Defaults()
@@ -50,7 +50,7 @@ func TestProcessWhitelistedGetsReply(t *testing.T) {
 	}
 
 	rs := mt.Replies()
-	if len(rs) != 1 || rs[0].Body != "the answer" {
+	if len(rs) != 1 || !strings.HasPrefix(rs[0].Body, "the answer\n\nOn ") {
 		t.Errorf("expected one reply 'the answer', got %#v", rs)
 	}
 	if rs[0].To != "alice@163.com" {
@@ -316,7 +316,7 @@ func testPreview(s string) string {
 	return s
 }
 
-// --- prompt contracts on resume (config.PromptContracts) --------------------
+// --- prompt contracts on resume (fixed: full on a new session, compact on resume) --------------------
 
 // threadEML builds a message in the thread rooted at <m1@163.com>. The first
 // call (root) omits References so ThreadRoot falls back to its own id; later
@@ -383,32 +383,6 @@ func TestProcessOmitsContractsOnResume(t *testing.T) {
 	}
 }
 
-// TestProcessAlwaysContractsRepeatsThem pins the escape hatch: operators who
-// see long threads drift out of format can set contracts: always.
-func TestProcessAlwaysContractsRepeatsThem(t *testing.T) {
-	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nfirst", "Hi Alice,\n\nsecond"}}
-	mt := newTestApp(t, []string{"alice@163.com"}, run)
-	mt.App().Cfg().PromptContracts = config.ContractsAlways
-
-	for i, root := range []bool{true, false} {
-		id := "m1@163.com"
-		if !root {
-			id = "m2@163.com"
-		}
-		if err := mt.SendRaw(uint32(i+1), threadEML(id, root)); err != nil {
-			t.Fatal(err)
-		}
-		if err := mt.RunOnce(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := range run.Prompts {
-		if !strings.Contains(run.Prompts[i], greetingContract) {
-			t.Errorf("contracts=always: prompt %d must carry the contracts", i)
-		}
-	}
-}
-
 // TestProcessRetriesColdWithFullContracts is the safety net for the
 // interaction between contracts-on-resume and runner.ErrSessionLost.
 //
@@ -464,7 +438,7 @@ func TestProcessRetriesColdWithFullContracts(t *testing.T) {
 	}
 }
 
-// --- quoted-history stripping (config.StripQuoted) --------------------------
+// --- quoted-history stripping (fixed: stripped on resume only) --------------------------
 
 // quotedEML builds a reply-with-quote in the thread rooted at <m1@163.com>.
 func quotedEML(msgID string, isRoot bool, newText, quoted string) []byte {
@@ -481,7 +455,6 @@ func quotedEML(msgID string, isRoot bool, newText, quoted string) []byte {
 func TestProcessStripsQuotedOnResume(t *testing.T) {
 	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nfirst", "Hi Alice,\n\nsecond"}}
 	mt := newTestApp(t, []string{"alice@163.com"}, run)
-	mt.App().Cfg().StripQuoted = config.StripOnResume
 
 	if err := mt.SendRaw(1, quotedEML("m1@163.com", true, "第一封的新内容", "很久以前的历史")); err != nil {
 		t.Fatal(err)
@@ -512,32 +485,6 @@ func TestProcessStripsQuotedOnResume(t *testing.T) {
 	}
 }
 
-// TestProcessNeverStripsByDefault pins the opt-in: with the default config,
-// bodies reach the agent exactly as received.
-func TestProcessNeverStripsByDefault(t *testing.T) {
-	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nok", "Hi Alice,\n\nok"}}
-	mt := newTestApp(t, []string{"alice@163.com"}, run)
-	// Do NOT set StripQuoted; Defaults() gives "never".
-
-	for i, root := range []bool{true, false} {
-		id := "m1@163.com"
-		if !root {
-			id = "m2@163.com"
-		}
-		if err := mt.SendRaw(uint32(i+1), quotedEML(id, root, "新内容", "历史内容")); err != nil {
-			t.Fatal(err)
-		}
-		if err := mt.RunOnce(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := range run.Prompts {
-		if !strings.Contains(run.Prompts[i], "历史内容") {
-			t.Errorf("prompt %d: default config must not strip anything", i)
-		}
-	}
-}
-
 // TestProcessStripsBeforeTruncatingLeavesNoFragment covers the one case where
 // the order of stripping and truncating actually changes the result.
 //
@@ -555,7 +502,6 @@ func TestProcessStripsBeforeTruncatingLeavesNoFragment(t *testing.T) {
 	run := &mailtest.ScriptedRunner{Outs: []string{"Hi Alice,\n\nfirst", "Hi Alice,\n\nsecond"}}
 	mt := newTestApp(t, []string{"alice@163.com"}, run)
 	cfg := mt.App().Cfg()
-	cfg.StripQuoted = config.StripOnResume
 
 	const request = "请把上个季度的报表导出成 CSV 发给我。"
 	eml := quotedEML("m2@163.com", false, request, strings.Repeat("历史。", 200))
@@ -620,7 +566,6 @@ func TestProcessColdRetryRestoresQuotedHistory(t *testing.T) {
 		Errs: []error{nil, fmt.Errorf("%w: boom", runner.ErrSessionLost)},
 	}
 	mt := newTestApp(t, []string{"alice@163.com"}, run)
-	mt.App().Cfg().StripQuoted = config.StripOnResume
 
 	if err := mt.SendRaw(1, quotedEML("m1@163.com", true, "第一封", "历史内容")); err != nil {
 		t.Fatal(err)
@@ -970,7 +915,7 @@ func TestProcessDegenerateTwiceSendsPoliteNotice(t *testing.T) {
 	run := &mailtest.ScriptedRunner{Outs: []string{"Hi there,\n"}}
 	mt := newTestApp(t, []string{"alice@163.com"}, run)
 
-	if _, err := mt.Send("alice@163.com", "agent@163.com", "hi", "do the thing"); err != nil {
+	if _, err := mt.Send("alice@163.com", "helpdesk@163.com", "hi", "do the thing"); err != nil {
 		t.Fatal(err)
 	}
 	if err := mt.RunOnce(context.Background()); err != nil {
@@ -1056,7 +1001,7 @@ type smtpDeadSender struct {
 
 func (s *smtpDeadSender) SetHook(fn func(attempt int, err error, msgSize int)) { s.hook = fn }
 
-func (s *smtpDeadSender) Reply(to, subject, inReplyTo string, refs []string, body string, att []string) error {
+func (s *smtpDeadSender) Reply(_ replier.Envelope, body string, att []string) error {
 	s.sends++
 	err := fmt.Errorf("%w (account agent@163.com): 535 Error: authentication failed", replier.ErrAuth)
 	for i := 1; i <= s.attemptsPerReply; i++ {

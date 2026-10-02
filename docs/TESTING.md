@@ -102,14 +102,12 @@ injection endpoint, so this cannot leak into production.
 
 ### Both features need a thread
 
-`prompt.contracts` and `prompt.strip_quoted` only differ between a **cold** session and a
-**resumed** one. A single email is always cold, so a one-shot run proves nothing about
+Contracts (full vs compact) and quoted-history stripping only differ between a **cold**
+session and a **resumed** one: a cold session gets full contracts and the body as received;
+a resume gets compact contracts and the quoted history stripped. Neither is configurable. A single email is always cold, so a one-shot run proves nothing about
 either. Turn on debug logging — the prompt is only logged at DEBUG:
 
 ```yaml
-prompt:
-  contracts: on_resume
-  strip_quoted: on_resume     # default is never; must be enabled explicitly
 log_level: debug
 ```
 
@@ -321,8 +319,6 @@ Each of these produced a wrong conclusion at least once.
   and always `isNew=true`. `mailtest` needs the **same `workdir`** across runs.
 - **The counts are all zero** — `log_level` is not `debug`. The prompt and
   `stripped quoted history` are DEBUG-only lines.
-- **`strip_quoted` does nothing** — its default is `never`. It must be enabled explicitly,
-  unlike `contracts`, which defaults to `on_resume`.
 - **Turn 1 is a resume** — the thread root already exists in `session_store` from an earlier
   run. Use `-r <new-root>`, or clear `session_store`. Restarting the server is not enough:
   the map is on disk.

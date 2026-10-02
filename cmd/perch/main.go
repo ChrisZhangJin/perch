@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -169,7 +170,7 @@ func main() {
 		if *daemonStderr != "" {
 			daemonExtraEnv = append(daemonExtraEnv, "PERCH_DAEMON_STDERR="+*daemonStderr)
 		}
-		childPID, err := daemon.Daemonize(os.Args[0], os.Args[1:], pidfilePath, daemonExtraEnv, nil)
+		childPID, err := daemon.Daemonize(os.Args[0], os.Args[1:], pidfilePath, daemonExtraEnv, slog.New(plog.New(os.Stderr, slog.LevelInfo)))
 		if err != nil {
 			switch {
 			case errors.Is(err, daemon.ErrAlreadyRunning):
@@ -177,7 +178,7 @@ func main() {
 					"perch: already running: see pidfile %s\n", pidfilePath)
 			case errors.Is(err, daemon.ErrStalePidfile):
 				fmt.Fprintf(os.Stderr,
-					"perch: pidfile %s references a dead process — refusing to auto-remove.\n"+
+					"perch: pidfile %s has unparseable contents — refusing to auto-remove.\n"+
 						"Inspect with: cat %s\n"+
 						"Remove with: rm %s\n",
 					pidfilePath, pidfilePath, pidfilePath)
@@ -209,8 +210,21 @@ func main() {
 		levelSource = *logLevel
 	}
 	level, lvlErr := config.ParseLogLevel(levelSource)
-	log := slog.New(plog.New(os.Stderr, level))
+	var logOut io.Writer = os.Stderr
+	var logFileErr error
+	if cfg.LogFile != "" {
+		rf, err := plog.OpenRotating(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+		if err != nil {
+			logFileErr = err // fall back to stderr, reported below
+		} else {
+			logOut = rf
+		}
+	}
+	log := slog.New(plog.New(logOut, level))
 	slog.SetDefault(log)
+	if logFileErr != nil {
+		log.Warn("log file unavailable; logging to stderr", "path", cfg.LogFile, "err", logFileErr)
+	}
 	if lvlErr != nil {
 		log.Warn("log level", "err", lvlErr, "value", levelSource)
 	}

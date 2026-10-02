@@ -57,14 +57,12 @@ func processAlive(pid int) bool {
 }
 
 // preparePidfile inspects an existing pidfile at path and either
-// refuses to start (live pid) or refuses to start (stale pid or
-// unparseable content). It does NOT remove the existing pidfile and
-// does NOT write the new pid — that happens after the re-exec so a
-// failed re-exec leaves no pidfile behind. The defensive refusal
-// (vs. silent cleanup of stale pidfiles) means an operator with a
-// dying daemon must inspect and remove the file manually; auto-
-// cleanup would mask the symptom. A nil logger is allowed (warnings
-// are skipped).
+// refuses to start (live pid or unparseable content) or removes it
+// (stale pid: kill(pid, 0) returned ESRCH, so the process is verifiably
+// gone — typically after a crash or reboot). It does NOT write the new
+// pid — that happens after the re-exec so a failed re-exec leaves no
+// pidfile behind. Unparseable content is still refused, since we cannot
+// tell what wrote it. A nil logger is allowed (warnings are skipped).
 func preparePidfile(path string, log *slog.Logger) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -85,10 +83,13 @@ func preparePidfile(path string, log *slog.Logger) error {
 		return ErrAlreadyRunning
 	}
 	if log != nil {
-		log.Warn("stale pidfile present; refusing to start",
+		log.Warn("stale pidfile references a dead process; removing it",
 			"path", path, "pid", pid)
 	}
-	return ErrStalePidfile
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale pidfile: %w", err)
+	}
+	return nil
 }
 
 // stripDaemonFlags returns argv with --daemon and -D removed. Used so

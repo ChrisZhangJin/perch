@@ -16,14 +16,12 @@ import (
 )
 
 func TestComposeHeaders(t *testing.T) {
-	msg := Compose(
-		"agent@163.com",
-		"alice@163.com",
-		"Do X",
-		"<root-1@163.com>",
-		[]string{"<thread-root@163.com>", "<root-1@163.com>"},
-		"here is the result",
-	)
+	msg := Compose("agent@163.com", Envelope{
+		To:         "alice@163.com",
+		Subject:    "Do X",
+		InReplyTo:  "<root-1@163.com>",
+		References: []string{"<thread-root@163.com>", "<root-1@163.com>"},
+	}, "here is the result")
 	s := string(msg)
 	checks := []string{
 		"From: agent@163.com",
@@ -42,7 +40,7 @@ func TestComposeHeaders(t *testing.T) {
 }
 
 func TestComposeDoesNotDoubleRe(t *testing.T) {
-	msg := Compose("a@x", "b@x", "Re: Already", "<i@x>", nil, "body")
+	msg := Compose("a@x", Envelope{To: "b@x", Subject: "Re: Already", InReplyTo: "<i@x>"}, "body")
 	if strings.Contains(string(msg), "Subject: Re: Re: Already") {
 		t.Error("should not double-prefix Re:")
 	}
@@ -62,10 +60,10 @@ func TestComposeWithAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msg, err := ComposeWithAttachments(
-		"agent@163.com", "alice@163.com", "Do X", "<root-1@163.com>",
-		[]string{"<thread-root@163.com>"}, "here is the result", []string{f},
-	)
+	msg, err := ComposeWithAttachments("agent@163.com", Envelope{
+		To: "alice@163.com", Subject: "Do X", InReplyTo: "<root-1@163.com>",
+		References: []string{"<thread-root@163.com>"},
+	}, "here is the result", []string{f})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +318,7 @@ func TestReplyRetriesAuthRejection(t *testing.T) {
 	var attempts []int
 	r.SetHook(func(attempt int, _ error, _ int) { attempts = append(attempts, attempt) })
 
-	if err := r.Reply("alice@perch.test", "test", "<r@x>", nil, "hello", nil); err != nil {
+	if err := r.Reply(Envelope{To: "alice@perch.test", Subject: "test", InReplyTo: "<r@x>"}, "hello", nil); err != nil {
 		t.Fatalf("a 535 on the first login must not lose the reply, got: %v", err)
 	}
 	if len(attempts) != 2 {
@@ -352,7 +350,7 @@ func TestReplyRetriesAcrossTransientDrop(t *testing.T) {
 		hookCalls = append(hookCalls, attempt)
 	})
 
-	if err := r.Reply("alice@perch.test", "test", "<r@x>", nil,
+	if err := r.Reply(Envelope{To: "alice@perch.test", Subject: "test", InReplyTo: "<r@x>"},
 		"hello", nil); err != nil {
 		t.Fatalf("expected success on 2nd attempt, got: %v", err)
 	}
@@ -373,7 +371,7 @@ func TestReplyExhaustsAndReturnsAggregatedError(t *testing.T) {
 	var hookErrs []error
 	r.SetHook(func(_ int, err error, _ int) { hookErrs = append(hookErrs, err) })
 
-	err := r.Reply("alice@perch.test", "test", "<r@x>", nil, "hello", nil)
+	err := r.Reply(Envelope{To: "alice@perch.test", Subject: "test", InReplyTo: "<r@x>"}, "hello", nil)
 	if err == nil {
 		t.Fatal("expected error after exhausting retries, got nil")
 	}
@@ -403,7 +401,7 @@ func TestReplySucceedsOnFirstTryNoRetry(t *testing.T) {
 	var calls int
 	r.SetHook(func(_ int, _ error, _ int) { calls++ })
 
-	if err := r.Reply("alice@perch.test", "test", "<r@x>", nil, "hello", nil); err != nil {
+	if err := r.Reply(Envelope{To: "alice@perch.test", Subject: "test", InReplyTo: "<r@x>"}, "hello", nil); err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
 	if calls != 1 {
@@ -418,7 +416,7 @@ func TestReplySucceedsOnFirstTryNoRetry(t *testing.T) {
 func TestComposeStampsAutoSubmitted(t *testing.T) {
 	const want = "Auto-Submitted: auto-replied\r\n"
 
-	plain := string(Compose("a@x", "b@x", "hi", "<i@x>", []string{"<i@x>"}, "body"))
+	plain := string(Compose("a@x", Envelope{To: "b@x", Subject: "hi", InReplyTo: "<i@x>", References: []string{"<i@x>"}}, "body"))
 	if !strings.Contains(plain, want) {
 		t.Errorf("Compose is missing the header:\n%s", plain)
 	}
@@ -427,7 +425,7 @@ func TestComposeStampsAutoSubmitted(t *testing.T) {
 	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	multi, err := ComposeWithAttachments("a@x", "b@x", "hi", "<i@x>", nil, "body", []string{f})
+	multi, err := ComposeWithAttachments("a@x", Envelope{To: "b@x", Subject: "hi", InReplyTo: "<i@x>"}, "body", []string{f})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,11 +483,26 @@ func TestReplySubjectPrefixes(t *testing.T) {
 // TestComposeDoesNotStackChinesePrefix is the end-to-end form: the composed
 // header must carry exactly one reply marker.
 func TestComposeDoesNotStackChinesePrefix(t *testing.T) {
-	msg := string(Compose("a@x", "b@x", "回复：检查状态！", "<i@x>", nil, "body"))
+	msg := string(Compose("a@x", Envelope{To: "b@x", Subject: "回复：检查状态！", InReplyTo: "<i@x>"}, "body"))
 	if !strings.Contains(msg, "Subject: 回复：检查状态！") {
 		t.Errorf("expected the subject passed through untouched, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "Subject: Re: 回复：") {
 		t.Errorf("perch stacked a second reply prefix:\n%s", msg)
+	}
+}
+
+func TestComposeCcAndKind(t *testing.T) {
+	msg := string(Compose("a@x", Envelope{To: "b@x", Cc: []string{"c@x", "d@x"}, Subject: "hi", Kind: KindAck}, "body"))
+	for _, want := range []string{"Cc: c@x, d@x\r\n", "X-Perch-Kind: ack\r\n"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("missing %q in:\n%s", want, msg)
+		}
+	}
+	if got := (Envelope{To: "b@x", Cc: []string{"c@x"}}).recipients(); len(got) != 2 {
+		t.Errorf("recipients = %v, want To+Cc", got)
+	}
+	if def := string(Compose("a@x", Envelope{To: "b@x", Subject: "hi"}, "body")); !strings.Contains(def, "X-Perch-Kind: reply\r\n") || strings.Contains(def, "\r\nCc:") {
+		t.Errorf("default envelope:\n%s", def)
 	}
 }

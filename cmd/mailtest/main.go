@@ -147,7 +147,7 @@ func main() {
 
 	// Start from Defaults so the harness reproduces production behaviour.
 	// A bare &config.Config{} would zero the fields whose default is not the
-	// zero value — AgentTaskOnly (SAFETY PROTOCOL) and PromptContracts — and
+	// zero value — e.g. AgentTaskOnly (SAFETY PROTOCOL) — and
 	// this CLI exists precisely to observe what the real agent does.
 	perchCfg := config.Defaults()
 	perchCfg.MaxPromptBytes = 4096

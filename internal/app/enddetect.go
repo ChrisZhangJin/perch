@@ -141,7 +141,12 @@ func (a *App) conversationEnded(ctx context.Context, m *message.Message, isNew b
 	// thread makes a continuation perch has never answered, so there is no
 	// perch reply for a "thanks" to be closing. isNew comes from the session
 	// registry — perch's own record of threads it has taken part in.
-	if isNew {
+	//
+	// Peer agents are exempt: a peer's Re: answers mail this side's agent
+	// sent itself (e.g. through email-cli), which never enters the registry,
+	// and that is exactly where two robots trade "please wait" / "got it"
+	// forever. The Cc'd-into-a-human-thread case this guards does not apply.
+	if isNew && !a.isPeerAgent(m.From) {
 		a.log.Debug("end_detect outcome", "outcome", "not_run", "reason", "first_email",
 			"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 		return false
@@ -149,8 +154,8 @@ func (a *App) conversationEnded(ctx context.Context, m *message.Message, isNew b
 
 	// Quoted history would drown the one line the sender actually wrote —
 	// the whole signal here is "short acknowledgement above a long quote".
-	// Stripped unconditionally, independent of cfg.StripQuoted: that knob
-	// governs what the agent sees, and leaving the quote in would make this
+	// Stripped unconditionally, even on a cold session where the agent keeps
+	// the quote: leaving the quote in would make this
 	// question unanswerable rather than merely verbose.
 	body, _ := message.StripQuoted(m.Body)
 	body = message.TruncateUTF8(body, endDetectMaxBytes)

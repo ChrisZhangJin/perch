@@ -153,3 +153,19 @@ func TestForgetUnknownThreadIsNoOp(t *testing.T) {
 		t.Errorf("Forget on an unknown thread: %v, want nil", err)
 	}
 }
+
+func TestKnownMatchesAnyThreadID(t *testing.T) {
+	r, err := Load(filepath.Join(t.TempDir(), "s.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Resolve("<root@x>"); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := r.Known([]string{"<rewritten@x>", "<root@x>"}); !ok || got != "<root@x>" {
+		t.Errorf("Known = %q, %v; want <root@x>, true", got, ok)
+	}
+	if _, ok := r.Known([]string{"<other@x>"}); ok {
+		t.Error("Known matched an unregistered id")
+	}
+}

@@ -2,6 +2,7 @@ package mailtest
 
 import (
 	"context"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 	"strings"
 	"testing"
 
@@ -108,10 +109,10 @@ func TestFakeMailboxCallerUIDAdvancesNextUID(t *testing.T) {
 
 func TestFakeSenderRecordsInOrder(t *testing.T) {
 	s := &FakeSender{}
-	if err := s.Reply("alice@x", "Re: hi", "<r@x>", []string{"<r@x>"}, "first", []string{"/tmp/a.txt"}); err != nil {
+	if err := s.Reply(replier.Envelope{To: "alice@x", Subject: "Re: hi", InReplyTo: "<r@x>", References: []string{"<r@x>"}}, "first", []string{"/tmp/a.txt"}); err != nil {
 		t.Fatalf("Reply 1: %v", err)
 	}
-	if err := s.Reply("bob@x", "Re: hello", "<r2@x>", nil, "second", nil); err != nil {
+	if err := s.Reply(replier.Envelope{To: "bob@x", Subject: "Re: hello", InReplyTo: "<r2@x>"}, "second", nil); err != nil {
 		t.Fatalf("Reply 2: %v", err)
 	}
 
@@ -133,7 +134,7 @@ func TestFakeSenderRecordsInOrder(t *testing.T) {
 
 func TestFakeSenderRepliesReturnsCopy(t *testing.T) {
 	s := &FakeSender{}
-	_ = s.Reply("a@x", "s", "<r@x>", nil, "b", nil)
+	_ = s.Reply(replier.Envelope{To: "a@x", Subject: "s", InReplyTo: "<r@x>"}, "b", nil)
 	r1 := s.Replies()
 	r1[0].Body = "MUTATED"
 	r2 := s.Replies()
@@ -144,7 +145,7 @@ func TestFakeSenderRepliesReturnsCopy(t *testing.T) {
 
 func TestFakeSenderRepliesDeepCopiesInnerSlices(t *testing.T) {
 	s := &FakeSender{}
-	_ = s.Reply("a@x", "s", "<r@x>", []string{"<r@x>"}, "b", []string{"/tmp/x"})
+	_ = s.Reply(replier.Envelope{To: "a@x", Subject: "s", InReplyTo: "<r@x>", References: []string{"<r@x>"}}, "b", []string{"/tmp/x"})
 	r := s.Replies()
 	// Mutate inner slices in the snapshot.
 	r[0].References[0] = "MUTATED"
@@ -254,7 +255,7 @@ func TestMailtestEndToEnd(t *testing.T) {
 	if len(rs) != 1 {
 		t.Fatalf("Replies: got %d, want 1", len(rs))
 	}
-	if rs[0].To != "alice@x" || rs[0].Body != "the answer" || rs[0].Subject != "do the thing" {
+	if rs[0].To != "alice@x" || !strings.HasPrefix(rs[0].Body, "the answer\n\nOn ") || rs[0].Subject != "do the thing" {
 		t.Errorf("Reply: %+v", rs[0])
 	}
 	if !strings.HasPrefix(rs[0].InReplyTo, "<mtest-") || !strings.HasSuffix(rs[0].InReplyTo, "@mailtest>") {

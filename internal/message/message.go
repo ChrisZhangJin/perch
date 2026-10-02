@@ -43,6 +43,9 @@ type Message struct {
 	AutoSubmitted string // RFC 3834 Auto-Submitted; "" when absent
 	Precedence    string // de-facto Precedence: bulk|list|junk
 	ListID        string // List-Id / List-Unsubscribe / List-Post presence
+	// PerchKind is the X-Perch-Kind header another perch stamped on this
+	// mail ("reply", "ack", "notice"); "" for mail not sent by perch.
+	PerchKind string
 }
 
 // IsAutomated reports whether this message announces itself as machine
@@ -71,12 +74,31 @@ func (m *Message) IsAutomated() (bool, string) {
 	return false, ""
 }
 
-// ThreadRoot returns the first References id if present, else the message's own id.
+// ThreadRoot returns the first References id if present, else In-Reply-To,
+// else the message's own id. A reply carrying only In-Reply-To must not be
+// keyed on its own fresh id — that makes every turn look like a new thread.
 func (m *Message) ThreadRoot() string {
 	if len(m.References) > 0 {
 		return m.References[0]
 	}
+	if m.InReplyTo != "" {
+		return m.InReplyTo
+	}
 	return m.MessageID
+}
+
+// ThreadIDs lists every id this message points back to — References, then
+// In-Reply-To — deduplicated, oldest first.
+func (m *Message) ThreadIDs() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range append(append([]string{}, m.References...), m.InReplyTo) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // Parse reads an RFC5322 message, collecting the first text/plain part as
@@ -120,6 +142,7 @@ func Parse(r io.Reader, uid uint32, maxAttach int) (*Message, error) {
 	// matters here.
 	m.AutoSubmitted = headerKeyword(h.Get("Auto-Submitted"))
 	m.Precedence = headerKeyword(h.Get("Precedence"))
+	m.PerchKind = headerKeyword(h.Get("X-Perch-Kind"))
 	for _, k := range []string{"List-Id", "List-Unsubscribe", "List-Post"} {
 		if v := strings.TrimSpace(h.Get(k)); v != "" {
 			m.ListID = k

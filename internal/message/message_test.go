@@ -142,3 +142,17 @@ func TestParseDropsOversizedAttachment(t *testing.T) {
 		t.Errorf("body should survive oversized attachment drop: %q", m.Body)
 	}
 }
+
+func TestThreadRootFallsBackToInReplyTo(t *testing.T) {
+	m := &Message{MessageID: "<new@x>", InReplyTo: "<prev@x>"}
+	if got := m.ThreadRoot(); got != "<prev@x>" {
+		t.Errorf("ThreadRoot = %q, want <prev@x>", got)
+	}
+	m.References = []string{"<root@x>", "<prev@x>"}
+	if got := m.ThreadRoot(); got != "<root@x>" {
+		t.Errorf("ThreadRoot = %q, want <root@x>", got)
+	}
+	if got := m.ThreadIDs(); len(got) != 2 {
+		t.Errorf("ThreadIDs = %v, want deduplicated [root prev]", got)
+	}
+}

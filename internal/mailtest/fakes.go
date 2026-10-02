@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 )
 
 // FakeMailbox satisfies mailbox.Mailbox. FetchUnseen drains the queue and
@@ -79,6 +80,8 @@ func (f *FakeMailbox) SeenUIDs() []uint32 {
 // scan when applicable), not the raw agent stdout.
 type Reply struct {
 	To, Subject, InReplyTo string
+	Cc                     []string
+	Kind                   string // replier.Kind*; "" means a normal reply
 	References             []string
 	Body                   string
 	Attachments            []string
@@ -91,12 +94,13 @@ type FakeSender struct {
 	replies []Reply
 }
 
-func (s *FakeSender) Reply(to, subject, inReplyTo string, refs []string, body string, attachments []string) error {
+func (s *FakeSender) Reply(env replier.Envelope, body string, attachments []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.replies = append(s.replies, Reply{
-		To: to, Subject: subject, InReplyTo: inReplyTo,
-		References: append([]string{}, refs...),
+		To: env.To, Subject: env.Subject, InReplyTo: env.InReplyTo,
+		Cc: append([]string{}, env.Cc...), Kind: env.Kind,
+		References: append([]string{}, env.References...),
 		Body:       body, Attachments: append([]string{}, attachments...),
 	})
 	return nil

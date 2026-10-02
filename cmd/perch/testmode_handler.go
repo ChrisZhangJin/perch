@@ -13,6 +13,7 @@ import (
 
 	"github.com/ChrisZhangJin/perch/internal/app"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
+	"github.com/ChrisZhangJin/perch/internal/replier"
 )
 
 // QueuedMailbox is an in-memory mailbox that satisfies app.Mailbox.
@@ -54,8 +55,8 @@ func (q *QueuedMailbox) Close() error                               { return nil
 
 // replyCapture holds one outbound reply recorded by InjectSender.
 type replyCapture struct {
-	to, subject, inReplyTo, body string
-	refs, attachments            []string
+	to, subject, inReplyTo, body, kind string
+	cc, refs, attachments              []string
 }
 
 // InjectSender satisfies app.ReplySender by recording replies in memory and
@@ -71,12 +72,13 @@ type InjectSender struct {
 	replies []replyCapture
 }
 
-func (i *InjectSender) Reply(to, subject, inReplyTo string, refs []string, body string, attachments []string) error {
+func (i *InjectSender) Reply(env replier.Envelope, body string, attachments []string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.replies = append(i.replies, replyCapture{
-		to: to, subject: subject, inReplyTo: inReplyTo,
-		refs:        append([]string{}, refs...),
+		to: env.To, subject: env.Subject, inReplyTo: env.InReplyTo, kind: env.Kind,
+		cc:          append([]string{}, env.Cc...),
+		refs:        append([]string{}, env.References...),
 		body:        body,
 		attachments: append([]string{}, attachments...),
 	})

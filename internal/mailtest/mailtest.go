@@ -25,6 +25,7 @@ type Mailtest struct {
 	run app.TaskRunner
 	app *app.App
 	log *slog.Logger
+	cfg *config.Config
 	seq uint64 // monotonic for synthetic Message-IDs
 }
 
@@ -38,8 +39,7 @@ type Mailtest struct {
 //	cfg.AgentWorkdir = t.TempDir()
 //
 // A bare &config.Config{} is a trap. Several fields have non-zero defaults —
-// AgentTaskOnly (emits the SAFETY PROTOCOL) is true, PromptContracts is
-// "on_resume" — so a struct literal silently configures the opposite of
+// e.g. AgentTaskOnly (emits the SAFETY PROTOCOL) is true — so a struct literal silently configures the opposite of
 // production and the harness stops reproducing what perch actually does.
 //
 // allowFrom is forwarded to gate.New; pass ["*"] for allow-all or a
@@ -75,7 +75,7 @@ func New(cfg *config.Config, allowFrom []string, run app.TaskRunner) (*Mailtest,
 	log := slog.New(plog.New(os.Stderr, slog.LevelError))
 
 	a := app.New(cfg, mb, g, sess, run, rep, log)
-	return &Mailtest{mb: mb, rep: rep, run: run, app: a, log: log}, nil
+	return &Mailtest{mb: mb, rep: rep, run: run, app: a, log: log, cfg: cfg}, nil
 }
 
 // Send composes a minimal RFC822 message and queues it into the fake
@@ -88,6 +88,11 @@ func (m *Mailtest) Send(from, to, subject, body string) (uint32, error) {
 	}
 	if to == "" {
 		return 0, fmt.Errorf("mailtest: to must not be empty")
+	}
+	// The mailbox under test is whatever address the test mails; perch
+	// needs to know it to keep itself out of the reply-all Cc list.
+	if m.cfg.Email == "" {
+		m.cfg.Email = to
 	}
 
 	m.seq++
