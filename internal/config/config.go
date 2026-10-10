@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ChrisZhangJin/perch/internal/jev"
+	"github.com/ChrisZhangJin/perch/internal/llm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -101,6 +102,20 @@ type Config struct {
 	// `confidence` field and not merely "the model picked over". 0.9 by
 	// default because of the asymmetry above; lower it only with evidence.
 	EndDetectMinProb float64
+	// LLM* configure the chat-model alternative to Jev (internal/llm). It is
+	// asked whenever Jev is unconfigured or fails, for both end_detect and
+	// the duration probe — leave TYPESAFE_API_KEY unset and it is the
+	// replacement rather than the fallback. Built only when the key, base
+	// URL and model are all set.
+	//
+	// LLMFormat is the wire format: "openai" (DEFAULT; /chat/completions,
+	// DeepSeek, Ark, DashScope, MiMo) or "anthropic" (/v1/messages).
+	LLMFormat  string
+	LLMBaseURL string
+	LLMModel   string
+	LLMTimeout time.Duration
+	// LLMAPIKey is env-only (PERCH_LLM_API_KEY), same rule as JevAPIKey.
+	LLMAPIKey string
 	// AgentTaskOnly injects a SAFETY PROTOCOL section into the agent prompt
 	// telling the agent to refuse destructive side-requests that aren't the
 	// email's stated task. Read-only inspection and any operation inside
@@ -228,6 +243,13 @@ type yamlConfig struct {
 	JevTimeout       time.Duration `yaml:"jev_timeout"`
 	EndDetect        bool          `yaml:"end_detect"`
 	EndDetectMinProb float64       `yaml:"end_detect_min_prob"`
+	LLM              struct {
+		Format  string        `yaml:"format"`
+		BaseURL string        `yaml:"base_url"`
+		Model   string        `yaml:"model"`
+		Timeout time.Duration `yaml:"timeout"`
+		// No api_key: env-only (PERCH_LLM_API_KEY).
+	} `yaml:"llm"`
 	// No jev_api_key here on purpose — the key is env-only
 	// (TYPESAFE_API_KEY). See Config.JevAPIKey.
 }
@@ -327,6 +349,8 @@ func Defaults() *Config {
 		JevModel:           jev.DefaultModel,
 		JevTimeout:         jev.DefaultTimeout,
 		EndDetectMinProb:   0.9,
+		LLMFormat:          llm.FormatOpenAI,
+		LLMTimeout:         llm.DefaultTimeout,
 	}
 }
 
@@ -516,6 +540,24 @@ func applyYAML(c *Config, path string) error {
 				"value", y.EndDetectMinProb, "using", c.EndDetectMinProb)
 		}
 	}
+	if v := strings.ToLower(strings.TrimSpace(y.LLM.Format)); v != "" {
+		switch v {
+		case llm.FormatOpenAI, llm.FormatAnthropic:
+			c.LLMFormat = v
+		default:
+			slog.Warn("llm.format must be openai or anthropic; using current value",
+				"value", y.LLM.Format, "using", c.LLMFormat)
+		}
+	}
+	if v := strings.TrimSpace(y.LLM.BaseURL); v != "" {
+		c.LLMBaseURL = v
+	}
+	if v := strings.TrimSpace(y.LLM.Model); v != "" {
+		c.LLMModel = v
+	}
+	if y.LLM.Timeout > 0 {
+		c.LLMTimeout = y.LLM.Timeout
+	}
 	return nil
 }
 
@@ -658,6 +700,9 @@ func applyEnv(c *Config) {
 	// same rule as AGENT_AUTH_CODE. Never logged — not even its length.
 	if v := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")); v != "" {
 		c.JevAPIKey = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PERCH_LLM_API_KEY")); v != "" {
+		c.LLMAPIKey = v
 	}
 }
 

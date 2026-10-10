@@ -234,6 +234,20 @@ func (a *App) classifyTask(ctx context.Context, m *message.Message) (runtime str
 			"from", m.From, "subject", m.Subject, "message_id", m.MessageID, "err", err)
 		fellBack = true
 	}
+	// The LLM fallback answers short/long only — the ETA is a Jev score with
+	// no one-word form — so an ack it triggers simply omits the duration.
+	if a.llm != nil {
+		ch, err := a.llm.Choose(ctx, "classify", classifySystemPrompt, m.Body, []string{"short", "long"})
+		if err == nil {
+			a.log.Info("classify outcome", "source", "llm", "runtime", ch.Label,
+				"prob", ch.Prob(ch.Label), "calibrated", ch.Calibrated, "model", a.llm.Model(),
+				"from", m.From, "subject", m.Subject, "message_id", m.MessageID)
+			return ch.Label, 0, true
+		}
+		a.log.Warn("llm classify failed; using agent probe",
+			"from", m.From, "subject", m.Subject, "message_id", m.MessageID, "err", err)
+		fellBack = true
+	}
 
 	// The agent probe uses IsNew=true with sessionID="" so it never pollutes
 	// the thread's actual session; agents that persist state (nanopi) will
@@ -253,6 +267,12 @@ func (a *App) classifyTask(ctx context.Context, m *message.Message) (runtime str
 		"eta_min", etaMin, "from", m.From, "subject", m.Subject, "message_id", m.MessageID)
 	return runtime, etaMin, true
 }
+
+// classifySystemPrompt frames the duration probe for the LLM fallback.
+const classifySystemPrompt = "You estimate how long an AI coding agent will take to complete the task in " +
+	"an email. Do not perform it. short: done within about five minutes — a question answered from " +
+	"memory, a file read, a small edit. long: anything longer — multi-file changes, builds, test runs, " +
+	"investigations."
 
 // BuildLongAckBody is the interim acknowledgement perch sends when a task is
 // classified as long. It includes the ETA (in minutes) if the classifier

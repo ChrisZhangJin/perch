@@ -18,6 +18,7 @@ import (
 	"github.com/ChrisZhangJin/perch/internal/gate"
 	"github.com/ChrisZhangJin/perch/internal/hook"
 	"github.com/ChrisZhangJin/perch/internal/jev"
+	"github.com/ChrisZhangJin/perch/internal/llm"
 	"github.com/ChrisZhangJin/perch/internal/mailbox"
 	"github.com/ChrisZhangJin/perch/internal/message"
 	"github.com/ChrisZhangJin/perch/internal/replier"
@@ -60,6 +61,7 @@ type App struct {
 	rate     *replyRate   // per-thread reply cap; see loopguard.go
 	hook     *hook.Runner // optional on-email script; nil when unconfigured
 	jev      *jev.Client  // optional duration classifier; nil unless configured
+	llm      *llm.Client  // optional Jev alternative/fallback; nil unless configured
 	mu       sync.Mutex   // guards ProcessUnseen (defensive; app drives it serially)
 	// replyFailures counts consecutive SMTP failures per Message-ID, so the
 	// "leave it unseen and retry next poll" path is bounded instead of
@@ -103,13 +105,29 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 				"classifier", cfg.Classifier == config.ClassifierJev, "end_detect", cfg.EndDetect)
 		} else if log != nil {
 			log.Warn("jev is enabled but TYPESAFE_API_KEY is unset; " +
-				"the duration probe falls back to the agent and end-detection is inert")
+				"end_detect and the duration probe go to the llm fallback, if configured")
+		}
+	}
+	// The Jev alternative, wired under the same condition: it is only ever
+	// asked where Jev would have been.
+	var lc *llm.Client
+	if cfg.Classifier == config.ClassifierJev || cfg.EndDetect {
+		var err error
+		if lc, err = llm.New(cfg.LLMFormat, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout, log); err != nil && log != nil {
+			log.Warn("llm fallback disabled", "err", err)
+		} else if lc != nil && log != nil {
+			log.Info("llm fallback enabled", "format", lc.Format(), "model", lc.Model(),
+				"timeout", cfg.LLMTimeout)
+		}
+		if jc == nil && lc == nil && cfg.EndDetect && log != nil {
+			log.Warn("end_detect is on but neither Jev nor the llm fallback is configured; " +
+				"every continuation costs an extra agent probe run")
 		}
 	}
 	if len(cfg.PeerAgents) > 0 && log != nil {
 		log.Info("peer agents enabled", "peers", cfg.PeerAgents, "end_detect", cfg.EndDetect,
 			"max_replies_per_hour", cfg.MaxRepliesPerHour)
-		if !cfg.EndDetect || jc == nil {
+		if !cfg.EndDetect || (jc == nil && lc == nil) {
 			log.Warn("peer_agents is set but end_detect is not active; agent-to-agent threads " +
 				"will only stop at loop_guard.max_replies_per_hour")
 		}
@@ -118,7 +136,7 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 		}
 	}
 	a := &App{cfg: cfg, mb: mb, gate: g, sess: sess, run: run, rep: rep, log: log,
-		triggers: triggers, rate: newReplyRate(time.Hour), hook: h, jev: jc,
+		triggers: triggers, rate: newReplyRate(time.Hour), hook: h, jev: jc, llm: lc,
 		replyFailures: make(map[string]int)}
 	// Record how many SMTP attempts each Reply actually made, so the failure
 	// notice reports the truth. Optional, like FailureNotifier: senders that
@@ -340,9 +358,27 @@ func (a *App) ProcessUnseen(ctx context.Context) error {
 		// reply-rate slot was already consumed by rate.Allow above; not
 		// refunding it is the conservative reading and keeps the loop guard
 		// the single authority on its own counters.
-		if a.conversationEnded(ctx, m, isNew) {
+		switch a.conversationEnded(ctx, m, isNew) {
+		case verdictSkip:
 			_ = a.mb.MarkSeen(ctx, m.UID)
 			continue
+		case verdictUnknown:
+			// Nobody could judge this mail. A thread perch has answered at
+			// least twice gets a notice instead of a blind agent run — the
+			// notice is never answered by another perch, so it ends a loop;
+			// a younger thread is answered as usual. See unknownEndReplyLimit.
+			if n := perchRepliesInThread(m, a.cfg.Email); n >= unknownEndReplyLimit {
+				a.log.Warn("end_detect unavailable on an answered thread; sending notice instead of replying (loop guard)",
+					"from", m.From, "subject", m.Subject, "message_id", m.MessageID,
+					"perch_replies", n, "limit", unknownEndReplyLimit)
+				zh := looksChinese(failureLanguageSample(m.Subject, m.Body))
+				if err := a.rep.Reply(a.envelope(m, replier.KindNotice),
+					BuildEndDetectUnavailableBody(m.FromName, runner.AgentDisplayName(a.cfg.Email), zh), nil); err != nil {
+					a.log.Warn("end_detect notice send failed", "from", m.From, "err", err)
+				}
+				_ = a.mb.MarkSeen(ctx, m.UID)
+				continue
+			}
 		}
 
 		// Inbound attachments: persist so the agent can read them with its

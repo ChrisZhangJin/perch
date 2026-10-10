@@ -130,6 +130,27 @@ func BuildNoReplyBody(fromName, agentName string, zh bool) string {
 	return b.String()
 }
 
+// BuildEndDetectUnavailableBody is sent instead of an agent run when perch
+// cannot tell whether a thread it has already answered still wants a reply:
+// end_detect is on, but Jev and the LLM fallback both failed (see
+// App.conversationEnded). It goes out as a notice, which another perch never
+// answers, so it is the last word in an agent-to-agent loop; a human reads it
+// as "start a fresh email".
+func BuildEndDetectUnavailableBody(fromName, agentName string, zh bool) string {
+	var b strings.Builder
+	b.WriteString(greetingFor(fromName, zh))
+	b.WriteString("\n\n")
+	if zh {
+		b.WriteString("抱歉，我的邮件处理出了点问题，暂时没法判断这个线程是否还需要回复，所以这封我先不处理。\n\n")
+		b.WriteString("如果你还需要我做什么，请发一封新邮件（不要直接回复这个线程），我会照常处理。")
+	} else {
+		b.WriteString("Sorry — something is wrong with my email handling right now, and I can't tell whether this thread still needs a reply, so I'm not acting on this message.\n\n")
+		b.WriteString("If you still need something, please send it as a new email (not a reply in this thread) and I'll pick it up as usual.")
+	}
+	b.WriteString(signOffFor(agentName, zh))
+	return b.String()
+}
+
 // failureLanguageSample is the text looksChinese judges: the subject plus the
 // body as RECEIVED. Kept as one place so every perch-authored body decides the
 // language from the same evidence.

@@ -203,6 +203,25 @@ task_timeout: 30m                       # TASK_TIMEOUT (SIGTERM → 5s → SIGKI
 # timeout or unexpected answer means "reply as usual".
 # end_detect: false
 # end_detect_min_prob: 0.9
+#
+# llm: a chat model asked whenever Jev is unset or fails (e.g. HTTP 451 from
+# mainland China), for both end_detect and the duration probe. Leave
+# TYPESAFE_API_KEY unset and this is the replacement rather than a fallback.
+# The key is env-only: export PERCH_LLM_API_KEY. Inert until base_url and
+# model are both set.
+#   format: openai    — POST {base_url}/chat/completions; logprobs give a
+#                       calibrated P(over) (DeepSeek, Volcengine Ark, MiMo)
+#           anthropic — POST {base_url}/v1/messages; no logprobs, so the
+#                       answer is the model's word alone
+# Order for both questions: Jev -> llm -> agent probe.
+# If all three fail on a thread perch has already answered twice,
+# perch stops: it sends a "notice" (which another perch never answers)
+# instead of running the agent.
+llm:
+  format: openai
+  base_url: ""      # e.g. https://api.deepseek.com (anthropic: https://api.deepseek.com/anthropic)
+  model: ""         # e.g. deepseek-flash
+  timeout: 15s
 
 # --- Hooks -----------------------------------------------------------------
 # on_email: a script perch runs for every inbound email it ACCEPTS, just

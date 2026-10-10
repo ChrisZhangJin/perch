@@ -426,7 +426,16 @@ func persist(cfg *config.Config) error {
 		"# High on purpose: answering a \"thanks\" wastes one agent run, but\n" +
 		"# wrongly staying quiet drops a real request and nobody finds out.\n" +
 		"end_detect: " + strconv.FormatBool(cfg.EndDetect) + "\n" +
-		"end_detect_min_prob: " + strconv.FormatFloat(cfg.EndDetectMinProb, 'g', -1, 64) + "\n\n" +
+		"end_detect_min_prob: " + strconv.FormatFloat(cfg.EndDetectMinProb, 'g', -1, 64) + "\n" +
+		"# llm: a chat model asked whenever Jev is unset or fails, for both\n" +
+		"# end_detect and the duration probe. format: openai (/chat/completions)\n" +
+		"# or anthropic (/v1/messages). Key is env-only: PERCH_LLM_API_KEY.\n" +
+		"# Inert until base_url and model are set too.\n" +
+		"llm:\n" +
+		"  format: " + cfg.LLMFormat + "\n" +
+		"  base_url: \"" + cfg.LLMBaseURL + "\"   # e.g. https://api.deepseek.com\n" +
+		"  model: \"" + cfg.LLMModel + "\"   # e.g. deepseek-flash\n" +
+		"  timeout: " + cfg.LLMTimeout.String() + "\n\n" +
 		"# --- Hooks ---\n" +
 		"# on_email: a script perch runs for every inbound email it ACCEPTS,\n" +
 		"# just before the agent runs. Called with five positional arguments:\n" +
