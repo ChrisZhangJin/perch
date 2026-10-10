@@ -53,8 +53,9 @@ const (
 	// DefaultMaxTokens bounds the answer. The label is one word, but
 	// reasoning models (e.g. deepseek) count their hidden thinking against
 	// max_tokens; a small cap is spent on reasoning and content comes back
-	// empty, so leave ample room.
-	DefaultMaxTokens = 16384
+	// empty, so leave ample room. Providers reject a max_tokens above their
+	// own output cap with HTTP 400 — lower llm.max_tokens for those.
+	DefaultMaxTokens = 128 * 1024
 	// topLogprobs is the most every logprobs-capable provider checked
 	// accepts (DashScope caps at 5).
 	topLogprobs = 5
@@ -100,8 +101,9 @@ type Client struct {
 // New returns a client, or nil when apiKey, baseURL or model is empty — the
 // nil is the feature flag, same shape as jev.New. format defaults to
 // "openai"; any other unknown value is an error so a typo in perch.yaml
-// does not silently pick a wire format.
-func New(format, baseURL, apiKey, model string, timeout time.Duration, log *slog.Logger) (*Client, error) {
+// does not silently pick a wire format. A timeout or maxTokens of 0 or less
+// means DefaultTimeout / DefaultMaxTokens.
+func New(format, baseURL, apiKey, model string, timeout time.Duration, maxTokens int, log *slog.Logger) (*Client, error) {
 	apiKey, baseURL, model = strings.TrimSpace(apiKey), strings.TrimSpace(baseURL), strings.TrimSpace(model)
 	if apiKey == "" || baseURL == "" || model == "" {
 		return nil, nil
@@ -123,8 +125,11 @@ func New(format, baseURL, apiKey, model string, timeout time.Duration, log *slog
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
 	return &Client{format: format, url: url, key: apiKey, model: model,
-		maxTokens: DefaultMaxTokens, hc: &http.Client{Timeout: timeout}, log: log}, nil
+		maxTokens: maxTokens, hc: &http.Client{Timeout: timeout}, log: log}, nil
 }
 
 // Model returns the configured model, or "" for a nil client.

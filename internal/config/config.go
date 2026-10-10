@@ -114,6 +114,9 @@ type Config struct {
 	LLMBaseURL string
 	LLMModel   string
 	LLMTimeout time.Duration
+	// LLMMaxTokens is sent as max_tokens. Reasoning models count their
+	// thinking against it, so it must be large; DEFAULT llm.DefaultMaxTokens.
+	LLMMaxTokens int
 	// LLMAPIKey is env-only (PERCH_LLM_API_KEY), same rule as JevAPIKey.
 	LLMAPIKey string
 	// AgentTaskOnly injects a SAFETY PROTOCOL section into the agent prompt
@@ -244,10 +247,11 @@ type yamlConfig struct {
 	EndDetect        bool          `yaml:"end_detect"`
 	EndDetectMinProb float64       `yaml:"end_detect_min_prob"`
 	LLM              struct {
-		Format  string        `yaml:"format"`
-		BaseURL string        `yaml:"base_url"`
-		Model   string        `yaml:"model"`
-		Timeout time.Duration `yaml:"timeout"`
+		Format    string        `yaml:"format"`
+		BaseURL   string        `yaml:"base_url"`
+		Model     string        `yaml:"model"`
+		Timeout   time.Duration `yaml:"timeout"`
+		MaxTokens TokenCount    `yaml:"max_tokens"`
 		// No api_key: env-only (PERCH_LLM_API_KEY).
 	} `yaml:"llm"`
 	// No jev_api_key here on purpose — the key is env-only
@@ -351,6 +355,7 @@ func Defaults() *Config {
 		EndDetectMinProb:   0.9,
 		LLMFormat:          llm.FormatOpenAI,
 		LLMTimeout:         llm.DefaultTimeout,
+		LLMMaxTokens:       llm.DefaultMaxTokens,
 	}
 }
 
@@ -557,6 +562,14 @@ func applyYAML(c *Config, path string) error {
 	}
 	if y.LLM.Timeout > 0 {
 		c.LLMTimeout = y.LLM.Timeout
+	}
+	if y.LLM.MaxTokens != 0 {
+		if y.LLM.MaxTokens > 0 {
+			c.LLMMaxTokens = int(y.LLM.MaxTokens)
+		} else {
+			slog.Warn("llm.max_tokens must be positive; using current value",
+				"value", y.LLM.MaxTokens, "using", c.LLMMaxTokens)
+		}
 	}
 	return nil
 }

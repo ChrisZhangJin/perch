@@ -435,7 +435,8 @@ func persist(cfg *config.Config) error {
 		"  format: " + cfg.LLMFormat + "\n" +
 		"  base_url: \"" + cfg.LLMBaseURL + "\"   # e.g. https://api.deepseek.com\n" +
 		"  model: \"" + cfg.LLMModel + "\"   # e.g. deepseek-flash\n" +
-		"  timeout: " + cfg.LLMTimeout.String() + "\n\n" +
+		"  timeout: " + cfg.LLMTimeout.String() + "\n" +
+		"  max_tokens: " + strconv.Itoa(cfg.LLMMaxTokens) + "   # lower it if the provider rejects it (HTTP 400)\n\n" +
 		"# --- Hooks ---\n" +
 		"# on_email: a script perch runs for every inbound email it ACCEPTS,\n" +
 		"# just before the agent runs. Called with five positional arguments:\n" +

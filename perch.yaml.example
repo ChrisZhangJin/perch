@@ -221,7 +221,10 @@ llm:
   format: openai
   base_url: ""      # e.g. https://api.deepseek.com (anthropic: https://api.deepseek.com/anthropic)
   model: ""         # e.g. deepseek-flash
-  timeout: 15s
+  timeout: 2m       # reasoning models think before answering
+  max_tokens: 128k    # reasoning counts against this; a small cap returns
+                      # an empty answer. Lower it if the provider rejects
+                      # it with HTTP 400. Plain numbers or k/m (1024k = 1m).
 
 # --- Hooks -----------------------------------------------------------------
 # on_email: a script perch runs for every inbound email it ACCEPTS, just

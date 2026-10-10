@@ -113,11 +113,11 @@ func New(cfg *config.Config, mb Mailbox, g *gate.Gate, sess *session.Registry, r
 	var lc *llm.Client
 	if cfg.Classifier == config.ClassifierJev || cfg.EndDetect {
 		var err error
-		if lc, err = llm.New(cfg.LLMFormat, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout, log); err != nil && log != nil {
+		if lc, err = llm.New(cfg.LLMFormat, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout, cfg.LLMMaxTokens, log); err != nil && log != nil {
 			log.Warn("llm fallback disabled", "err", err)
 		} else if lc != nil && log != nil {
 			log.Info("llm fallback enabled", "format", lc.Format(), "model", lc.Model(),
-				"timeout", cfg.LLMTimeout)
+				"timeout", cfg.LLMTimeout, "max_tokens", cfg.LLMMaxTokens)
 		}
 		if jc == nil && lc == nil && cfg.EndDetect && log != nil {
 			log.Warn("end_detect is on but neither Jev nor the llm fallback is configured; " +
