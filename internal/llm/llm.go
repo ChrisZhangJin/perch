@@ -59,8 +59,10 @@ const (
 	// topLogprobs is the most every logprobs-capable provider checked
 	// accepts (DashScope caps at 5).
 	topLogprobs = 5
-	// maxBody caps how much of a response is read and quoted into errors.
-	maxBody = 64 << 10
+	// maxBody caps how much of a response is read. Reasoning models return
+	// their thinking (and per-token logprobs) in the body, which easily
+	// passes 64 KiB once max_tokens is large; a cut body fails to decode.
+	maxBody = 16 << 20
 	// minLabelMass is how much of the first token's top-k probability mass
 	// must land on a known label for the logprobs to count. Below it the
 	// model did not follow the one-word format and the distribution means
@@ -207,7 +209,7 @@ func (c *Client) Choose(ctx context.Context, purpose, system, prompt string, opt
 	}
 	if err != nil {
 		c.warn("llm answer unusable", "purpose", purpose, "format", c.format, "model", c.model,
-			"latency_ms", took.Milliseconds(), "err", err)
+			"latency_ms", took.Milliseconds(), "body_bytes", len(raw), "body", snippet(raw), "err", err)
 		return Choice{}, err
 	}
 	if c.log != nil {
@@ -236,7 +238,13 @@ func (c *Client) post(ctx context.Context, body []byte) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("llm: request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("llm: read response (%d bytes so far): %w", len(raw), err)
+	}
+	if len(raw) > maxBody {
+		return nil, resp.StatusCode, fmt.Errorf("llm: response larger than %d bytes", maxBody)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, resp.StatusCode, fmt.Errorf("llm: unexpected status %d: %s", resp.StatusCode, snippet(raw))
 	}

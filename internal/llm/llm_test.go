@@ -124,3 +124,15 @@ func TestNilClient(t *testing.T) {
 }
 
 func f(x float64) string { b, _ := json.Marshal(x); return string(b) }
+
+// A reasoning model's body (thinking + per-token logprobs) passed the old
+// 64 KiB read cap and was cut mid-JSON: "unexpected end of JSON input".
+func TestLargeReasoningBodyDecodes(t *testing.T) {
+	thinking := strings.Repeat("let me think. ", 20000) // ~280 KB
+	body := `{"choices":[{"message":{"reasoning_content":"` + thinking + `","content":"reply"}}]}`
+	srv := serve(t, 200, body, nil, nil)
+	c, _ := New("", srv.URL, "k", "m", 0, 0, nil)
+	if ch, err := c.Choose(context.Background(), "t", "s", "p", opts); err != nil || ch.Label != "reply" {
+		t.Errorf("got %+v, %v", ch, err)
+	}
+}
