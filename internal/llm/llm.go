@@ -45,13 +45,16 @@ const (
 )
 
 const (
-	// DefaultTimeout matches jev.DefaultTimeout's reasoning: the call runs
-	// inline while ProcessUnseen holds the app lock. A little longer than
-	// Jev's because a chat model is slower than a typed classifier.
-	DefaultTimeout = 15 * time.Second
-	// DefaultMaxTokens bounds the answer. The label is one word; the slack
-	// is for models that prefix a space or punctuation.
-	DefaultMaxTokens = 16
+	// DefaultTimeout is generous because reasoning models (e.g. deepseek)
+	// think before answering; with DefaultMaxTokens of headroom a call can
+	// take well past Jev's budget. It still runs inline while ProcessUnseen
+	// holds the app lock, so a hung provider stalls the mailbox this long.
+	DefaultTimeout = 2 * time.Minute
+	// DefaultMaxTokens bounds the answer. The label is one word, but
+	// reasoning models (e.g. deepseek) count their hidden thinking against
+	// max_tokens; a small cap is spent on reasoning and content comes back
+	// empty, so leave ample room.
+	DefaultMaxTokens = 16384
 	// topLogprobs is the most every logprobs-capable provider checked
 	// accepts (DashScope caps at 5).
 	topLogprobs = 5

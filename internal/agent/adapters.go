@@ -51,8 +51,13 @@ func buildNanopiArgs(a Args) []string {
 
 // buildPiArgs distinguishes new (--session-id) vs resume (--session). PermMode
 // is not part of pi's CLI; the --mode flag controls output format only.
+// An empty SessionID (the throwaway classify probe) omits the flag: pi
+// rejects an empty --session-id outright.
 func buildPiArgs(a Args) []string {
 	args := []string{"-p", a.Prompt, "--mode", "text"}
+	if a.SessionID == "" {
+		return withAppendSystemPrompt(args, a.AppendSystemPrompt)
+	}
 	if a.IsNew {
 		args = append(args, "--session-id", a.SessionID)
 	} else {
